@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput,
   Modal, ActivityIndicator, Alert, Dimensions, KeyboardAvoidingView,
-  Platform, RefreshControl,
+  Platform, RefreshControl, Clipboard,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -513,39 +513,52 @@ export default function RepPanelScreen() {
               </View>
             ) : (
               filteredDevices.map(d => (
-                <Pressable
-                  key={d.id}
-                  style={styles.deviceCard}
-                  onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
-                >
-                  <View style={[styles.statusDot, {
-                    backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated && !d.blocked_reason ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800'
-                  }]} />
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.deviceCardRow}>
-                      <Text style={styles.deviceEmail} numberOfLines={1}>
-                        {d.client_name ? `${d.client_name} — ` : ''}{d.email}
-                      </Text>
-                      <View style={[styles.pkgBadge, { marginLeft: 6, borderColor: d.package_type === 'p2p' ? 'rgba(76,175,80,0.4)' : 'rgba(229,0,0,0.3)' }]}>
-                        <Text style={[styles.pkgBadgeText, { color: d.package_type === 'p2p' ? '#4CAF50' : Colors.primary }]}>
-                          {(d.package_type ?? 'IPTV').toUpperCase()}
+                  <Pressable
+                    key={d.id}
+                    style={styles.deviceCard}
+                    onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
+                  >
+                    <View style={[styles.statusDot, {
+                      backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated && !d.blocked_reason ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800'
+                    }]} />
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.deviceCardRow}>
+                        <Text style={styles.deviceEmail} numberOfLines={1}>
+                          {d.client_name ? `${d.client_name} — ` : ''}{d.email}
                         </Text>
+                        <View style={[styles.pkgBadge, { marginLeft: 6, borderColor: d.package_type === 'p2p' ? 'rgba(76,175,80,0.4)' : 'rgba(229,0,0,0.3)' }]}>
+                          <Text style={[styles.pkgBadgeText, { color: d.package_type === 'p2p' ? '#4CAF50' : Colors.primary }]}>
+                            {(d.package_type ?? 'IPTV').toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.deviceMacRow}>
+                        <Text style={styles.deviceMac}>{d.mac_address}</Text>
+                        <Pressable
+                          style={styles.macCopyBtn}
+                          hitSlop={8}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            Clipboard.setString(d.mac_address);
+                            Alert.alert('MAC copiado!', d.mac_address);
+                          }}
+                        >
+                          <Ionicons name="copy-outline" size={12} color={Colors.primary} />
+                        </Pressable>
+                      </View>
+                      <View style={styles.deviceMeta}>
+                        <Text style={[styles.deviceMetaText, { color: isOnline(d.last_seen_at) ? '#4CAF50' : Colors.textMuted }]}>
+                          {isOnline(d.last_seen_at) ? '● Online' : `Visto: ${formatLastSeen(d.last_seen_at)}`}
+                        </Text>
+                        {d.expires_at ? (
+                          <Text style={[styles.deviceMetaText, { color: new Date(d.expires_at) < new Date() ? Colors.error : Colors.textMuted }]}>
+                            {formatExpiry(d.expires_at)}
+                          </Text>
+                        ) : null}
                       </View>
                     </View>
-                    <Text style={styles.deviceMac}>{d.mac_address}</Text>
-                    <View style={styles.deviceMeta}>
-                      <Text style={[styles.deviceMetaText, { color: isOnline(d.last_seen_at) ? '#4CAF50' : Colors.textMuted }]}>
-                        {isOnline(d.last_seen_at) ? '● Online' : `Visto: ${formatLastSeen(d.last_seen_at)}`}
-                      </Text>
-                      {d.expires_at ? (
-                        <Text style={[styles.deviceMetaText, { color: new Date(d.expires_at) < new Date() ? Colors.error : Colors.textMuted }]}>
-                          {formatExpiry(d.expires_at)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-                </Pressable>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                  </Pressable>
               ))
             )}
           </View>
@@ -639,7 +652,6 @@ export default function RepPanelScreen() {
                     {[
                       { icon: 'person-outline', label: 'Cliente', value: selectedDevice.client_name || '—' },
                       { icon: 'mail-outline', label: 'E-mail', value: selectedDevice.email },
-                      { icon: 'hardware-chip-outline', label: 'MAC', value: selectedDevice.mac_address, mono: true },
                       { icon: 'tv-outline', label: 'Pacote', value: (selectedDevice.package_type ?? 'iptv').toUpperCase() },
                       { icon: 'server-outline', label: 'Fonte', value: selectedDevice.sources?.name ?? '—' },
                       { icon: 'time-outline', label: 'Último acesso', value: formatLastSeen(selectedDevice.last_seen_at) },
@@ -647,9 +659,26 @@ export default function RepPanelScreen() {
                       <View key={row.label} style={styles.detailRow}>
                         <Ionicons name={row.icon as any} size={14} color={Colors.textMuted} />
                         <Text style={styles.detailLabel}>{row.label}</Text>
-                        <Text style={[styles.detailValue, (row as any).mono && { fontFamily: 'monospace', fontSize: 11 }]} numberOfLines={1}>{row.value}</Text>
+                        <Text style={styles.detailValue} numberOfLines={1}>{row.value}</Text>
                       </View>
                     ))}
+
+                    {/* MAC row with copy button */}
+                    <Pressable
+                      style={styles.detailRow}
+                      onPress={() => {
+                        Clipboard.setString(selectedDevice.mac_address);
+                        Alert.alert('Copiado!', selectedDevice.mac_address);
+                      }}
+                    >
+                      <Ionicons name="hardware-chip-outline" size={14} color={Colors.textMuted} />
+                      <Text style={styles.detailLabel}>MAC</Text>
+                      <Text style={[styles.detailValue, { fontFamily: 'monospace', fontSize: 11, flex: 1 }]} numberOfLines={1}>{selectedDevice.mac_address}</Text>
+                      <View style={styles.copyIconBtn}>
+                        <Ionicons name="copy-outline" size={14} color={Colors.primary} />
+                        <Text style={styles.copyIconLabel}>Copiar</Text>
+                      </View>
+                    </Pressable>
 
                     {/* Status */}
                     <View style={styles.detailRow}>
@@ -1135,6 +1164,10 @@ const styles = StyleSheet.create({
   filterChipTextActive: { color: Colors.primary },
   searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a1a1a', borderRadius: 10, paddingHorizontal: 12, height: 40, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 8, marginBottom: 10 },
   searchInput: { flex: 1, color: '#fff', fontSize: 13 },
+  macCopyBtn: { width: 24, height: 24, borderRadius: 5, backgroundColor: 'rgba(229,0,0,0.1)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)', marginLeft: 6 },
+  deviceMacRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
+  copyIconBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(229,0,0,0.1)', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(229,0,0,0.25)' },
+  copyIconLabel: { color: Colors.primary, fontSize: 10, fontWeight: '700' },
   deviceCard: { backgroundColor: '#141414', borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', flexDirection: 'row', alignItems: 'center', gap: 10 },
   deviceCardRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
   statusDot: { width: 10, height: 10, borderRadius: 5 },

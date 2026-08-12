@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
     // ── Check by MAC address ──────────────────────────────────────
     const { data: existing } = await supabase
       .from('devices')
-      .select('*, plans(*)')
+      .select('*, plans(*), sources(*)')
       .eq('mac_address', mac_address)
       .maybeSingle();
 
@@ -63,8 +63,9 @@ Deno.serve(async (req) => {
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // ── ACTIVATED ─────────────────────────────────────────────
-      if (existing.activated && existing.plans) {
+      // ── ACTIVATED — via plan OR via representative source ────────
+      const hasCredentials = existing.activated && (existing.plans || existing.sources);
+      if (hasCredentials) {
         // Check if MAC has expired
         if (existing.expires_at && new Date(existing.expires_at) < new Date()) {
           await supabase.from('devices').update({
@@ -83,6 +84,12 @@ Deno.serve(async (req) => {
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
+        // Resolve credentials: source takes priority over plan
+        const credSource = existing.sources || existing.plans;
+        const planLabel = existing.sources
+          ? existing.sources.name
+          : existing.plans?.name ?? 'Plano';
+
         // Fetch notifications
         const { data: notifications } = await supabase
           .from('notifications')
@@ -94,11 +101,11 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({
           status: 'activated',
           credentials: {
-            server: existing.plans.server_url,
-            username: existing.plans.xtream_username,
-            password: existing.plans.xtream_password,
+            server: credSource.server_url,
+            username: credSource.xtream_username,
+            password: credSource.xtream_password,
           },
-          plan_name: existing.plans.name,
+          plan_name: planLabel,
           expires_at: existing.expires_at,
           mac_address,
           email: normalizedEmail,
@@ -129,16 +136,17 @@ Deno.serve(async (req) => {
             .eq('mac_address', mac_address)
             .maybeSingle();
 
-          if (renewed?.plans) {
+          const renewedCred = renewed?.sources || renewed?.plans;
+        if (renewedCred) {
             return new Response(JSON.stringify({
               status: 'activated',
               credentials: {
-                server: renewed.plans.server_url,
-                username: renewed.plans.xtream_username,
-                password: renewed.plans.xtream_password,
+                server: renewedCred.server_url,
+                username: renewedCred.xtream_username,
+                password: renewedCred.xtream_password,
               },
-              plan_name: renewed.plans.name,
-              expires_at: renewed.expires_at,
+              plan_name: renewed?.sources?.name ?? renewed?.plans?.name ?? 'Plano',
+              expires_at: renewed?.expires_at,
               grace_period_used: true,
               mac_address,
               email: normalizedEmail,
