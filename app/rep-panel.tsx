@@ -16,6 +16,7 @@ import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
   repLogin, getRepDevices, getRepSources, activateRepDevice, activateRepTest,
   deactivateRepDevice, blockRepDevice, deleteRepDevice, renewRepDevice,
+  lookupDeviceByMac,
   Representative, Source, RepDevice,
 } from '@/services/repApiService';
 
@@ -48,6 +49,27 @@ function formatExpiry(v: string | null | undefined): string {
   return `Expira em ${days}d`;
 }
 
+/** Format a Date to DD/MM/YYYY string */
+function formatDateBR(d: Date): string {
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+/** Parse DD/MM/YYYY to Date */
+function parseDateBR(s: string): Date | null {
+  const parts = s.split('/');
+  if (parts.length !== 3) return null;
+  const [d, m, y] = parts.map(Number);
+  if (!d || !m || !y || y < 2024) return null;
+  const date = new Date(y, m - 1, d);
+  if (isNaN(date.getTime())) return null;
+  return date;
+}
+
+/** Compute days between today and a future date (min 1) */
+function daysBetween(from: Date, to: Date): number {
+  return Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000));
+}
+
 export default function RepPanelScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -69,18 +91,23 @@ export default function RepPanelScreen() {
   const [devicesSearch, setDevicesSearch] = useState('');
   const [devicesFilter, setDevicesFilter] = useState<'all' | 'active' | 'blocked' | 'online'>('all');
 
-  // Add device form
+  // Add device form — expiresDateStr is DD/MM/YYYY
   const [addForm, setAddForm] = useState({
-    mac: '', email: '', clientName: '',
-    sourceId: '', packageType: 'iptv' as 'iptv' | 'p2p', days: '30',
+    mac: '', clientName: '', sourceId: '',
+    packageType: 'iptv' as 'iptv' | 'p2p',
+    expiresDateStr: '',   // custom date chosen by rep
+    days: '30',           // derived from date or preset
   });
   const [addLoading, setAddLoading] = useState(false);
+  const [addLookingUp, setAddLookingUp] = useState(false);
 
   // Test activation form
   const [testForm, setTestForm] = useState({
-    mac: '', email: '', clientName: '', sourceId: '', packageType: 'iptv' as 'iptv' | 'p2p', hours: '2',
+    mac: '', clientName: '', sourceId: '',
+    packageType: 'iptv' as 'iptv' | 'p2p', hours: '2',
   });
   const [testLoading, setTestLoading] = useState(false);
+  const [testLookingUp, setTestLookingUp] = useState(false);
 
   // Detail modal
   const [detailModal, setDetailModal] = useState(false);
@@ -95,6 +122,10 @@ export default function RepPanelScreen() {
   const [renewModal, setRenewModal] = useState(false);
   const [renewDays, setRenewDays] = useState('30');
   const [renewLoading, setRenewLoading] = useState(false);
+
+  // MAC lookup debounce timers
+  const addMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const testMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -137,11 +168,67 @@ export default function RepPanelScreen() {
     }
   }, [loggedIn, loadData]);
 
+  // ── MAC auto-lookup ────────────────────────────────────────────────────────
+  function handleAddMacChange(mac: string) {
+    setAddForm(f => ({ ...f, mac }));
+    if (addMacTimer.current) clearTimeout(addMacTimer.current);
+    const cleaned = mac.replace(/[^A-Fa-f0-9:]/g, '').toUpperCase();
+    if (cleaned.length >= 17) {
+      addMacTimer.current = setTimeout(() => lookupAddMac(cleaned), 600);
+    }
+  }
+
+  async function lookupAddMac(mac: string) {
+    setAddLookingUp(true);
+    const result = await lookupDeviceByMac(mac);
+    setAddLookingUp(false);
+    if (result.found && result.client_name) {
+      setAddForm(f => ({ ...f, clientName: result.client_name || '' }));
+    }
+  }
+
+  function handleTestMacChange(mac: string) {
+    setTestForm(f => ({ ...f, mac }));
+    if (testMacTimer.current) clearTimeout(testMacTimer.current);
+    const cleaned = mac.replace(/[^A-Fa-f0-9:]/g, '').toUpperCase();
+    if (cleaned.length >= 17) {
+      testMacTimer.current = setTimeout(() => lookupTestMac(cleaned), 600);
+    }
+  }
+
+  async function lookupTestMac(mac: string) {
+    setTestLookingUp(true);
+    const result = await lookupDeviceByMac(mac);
+    setTestLookingUp(false);
+    if (result.found && result.client_name) {
+      setTestForm(f => ({ ...f, clientName: result.client_name || '' }));
+    }
+  }
+
+  // ── Date / days helpers ────────────────────────────────────────────────────
+  function handleAddDateChange(dateStr: string) {
+    // Allow only digits and slashes, auto-insert slashes
+    let v = dateStr.replace(/[^\d/]/g, '');
+    if (v.length === 2 && addForm.expiresDateStr.length === 1) v = v + '/';
+    if (v.length === 5 && addForm.expiresDateStr.length === 4) v = v + '/';
+    setAddForm(f => {
+      const parsed = parseDateBR(v);
+      const days = parsed ? String(daysBetween(new Date(), parsed)) : f.days;
+      return { ...f, expiresDateStr: v, days };
+    });
+  }
+
+  function applyPresetDays(preset: string) {
+    const d = new Date();
+    d.setDate(d.getDate() + parseInt(preset));
+    setAddForm(f => ({ ...f, days: preset, expiresDateStr: formatDateBR(d) }));
+  }
+
   // ── Actions ────────────────────────────────────────────────────────────────
   async function handleAddDevice() {
-    const { mac, email, clientName, sourceId, packageType, days } = addForm;
-    if (!mac.trim() || !email.trim() || !sourceId || !days) {
-      Alert.alert('Atenção', 'Preencha todos os campos obrigatórios');
+    const { mac, clientName, sourceId, packageType, days, expiresDateStr } = addForm;
+    if (!mac.trim() || !sourceId || !days) {
+      Alert.alert('Atenção', 'Preencha MAC, fonte e prazo');
       return;
     }
     const daysNum = parseInt(days);
@@ -151,11 +238,28 @@ export default function RepPanelScreen() {
       Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta operação requer ${creditsNeeded}.`);
       return;
     }
+
+    // Parse custom date if provided
+    let expiresAtDate: string | undefined;
+    if (expiresDateStr) {
+      const parsed = parseDateBR(expiresDateStr);
+      if (parsed && parsed > new Date()) {
+        expiresAtDate = parsed.toISOString();
+      }
+    }
+
     setAddLoading(true);
     try {
-      await activateRepDevice({ mac: mac.trim().toUpperCase(), email: email.trim(), clientName: clientName.trim(), sourceId, packageType, days: daysNum });
+      await activateRepDevice({
+        mac: mac.trim().toUpperCase(),
+        clientName: clientName.trim() || undefined,
+        sourceId,
+        packageType,
+        days: daysNum,
+        expiresAtDate,
+      });
       setRep(prev => prev ? { ...prev, credits: prev.credits - creditsNeeded } : prev);
-      setAddForm({ mac: '', email: '', clientName: '', sourceId: '', packageType: 'iptv', days: '30' });
+      setAddForm({ mac: '', clientName: '', sourceId: '', packageType: 'iptv', expiresDateStr: '', days: '30' });
       await loadData(false);
       Alert.alert('Ativado!', `MAC ${mac.trim().toUpperCase()} ativado com sucesso.`);
     } catch (e: any) { Alert.alert('Erro', e.message); }
@@ -163,9 +267,9 @@ export default function RepPanelScreen() {
   }
 
   async function handleTestActivation() {
-    const { mac, email, clientName, sourceId, packageType, hours } = testForm;
-    if (!mac.trim() || !email.trim() || !sourceId) {
-      Alert.alert('Atenção', 'Preencha MAC, e-mail e fonte');
+    const { mac, clientName, sourceId, packageType, hours } = testForm;
+    if (!mac.trim() || !sourceId) {
+      Alert.alert('Atenção', 'Preencha MAC e fonte');
       return;
     }
     const hoursNum = parseInt(hours);
@@ -175,8 +279,14 @@ export default function RepPanelScreen() {
     }
     setTestLoading(true);
     try {
-      await activateRepTest({ mac: mac.trim().toUpperCase(), email: email.trim(), clientName: clientName.trim(), sourceId, packageType, hours: hoursNum });
-      setTestForm({ mac: '', email: '', clientName: '', sourceId: '', packageType: 'iptv', hours: '2' });
+      await activateRepTest({
+        mac: mac.trim().toUpperCase(),
+        clientName: clientName.trim() || undefined,
+        sourceId,
+        packageType,
+        hours: hoursNum,
+      });
+      setTestForm({ mac: '', clientName: '', sourceId: '', packageType: 'iptv', hours: '2' });
       await loadData(false);
       Alert.alert('Teste ativado!', `Acesso de ${hoursNum}h liberado para ${mac.trim().toUpperCase()}.`);
     } catch (e: any) { Alert.alert('Erro', e.message); }
@@ -185,7 +295,7 @@ export default function RepPanelScreen() {
 
   async function handleDeactivate() {
     if (!selectedDevice) return;
-    Alert.alert('Desativar', `Desativar ${selectedDevice.email}?`, [
+    Alert.alert('Desativar', `Desativar ${selectedDevice.client_name || selectedDevice.mac_address}?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Desativar', style: 'destructive', onPress: async () => {
@@ -213,7 +323,7 @@ export default function RepPanelScreen() {
 
   async function handleDelete() {
     if (!selectedDevice) return;
-    Alert.alert('Excluir dispositivo', `Remover ${selectedDevice.email} permanentemente?`, [
+    Alert.alert('Excluir dispositivo', `Remover ${selectedDevice.client_name || selectedDevice.mac_address} permanentemente?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir', style: 'destructive', onPress: async () => {
@@ -250,7 +360,9 @@ export default function RepPanelScreen() {
   // ── Computed ───────────────────────────────────────────────────────────────
   const filteredDevices = devices.filter(d => {
     const q = devicesSearch.toLowerCase();
-    const matchSearch = !q || d.email.toLowerCase().includes(q) || d.mac_address.toLowerCase().includes(q) || (d.client_name || '').toLowerCase().includes(q);
+    const matchSearch = !q ||
+      (d.client_name || '').toLowerCase().includes(q) ||
+      d.mac_address.toLowerCase().includes(q);
     const matchFilter =
       devicesFilter === 'all' ? true :
       devicesFilter === 'online' ? isOnline(d.last_seen_at) :
@@ -470,14 +582,14 @@ export default function RepPanelScreen() {
           </View>
         )}
 
-        {/* ── DEVICES ── */}
+        {/* ── DEVICES / CLIENTES ── */}
         {activeTab === 'devices' && (
           <View style={styles.section}>
             <View style={styles.searchWrap}>
               <Ionicons name="search" size={14} color={Colors.textMuted} />
               <TextInput
                 style={styles.searchInput}
-                placeholder="Buscar nome, e-mail ou MAC..."
+                placeholder="Buscar nome ou MAC..."
                 placeholderTextColor={Colors.textMuted}
                 value={devicesSearch}
                 onChangeText={setDevicesSearch}
@@ -513,52 +625,50 @@ export default function RepPanelScreen() {
               </View>
             ) : (
               filteredDevices.map(d => (
-                  <Pressable
-                    key={d.id}
-                    style={styles.deviceCard}
-                    onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
-                  >
-                    <View style={[styles.statusDot, {
-                      backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated && !d.blocked_reason ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800'
-                    }]} />
-                    <View style={{ flex: 1 }}>
-                      <View style={styles.deviceCardRow}>
-                        <Text style={styles.deviceEmail} numberOfLines={1}>
-                          {d.client_name ? `${d.client_name} — ` : ''}{d.email}
-                        </Text>
-                        <View style={[styles.pkgBadge, { marginLeft: 6, borderColor: d.package_type === 'p2p' ? 'rgba(76,175,80,0.4)' : 'rgba(229,0,0,0.3)' }]}>
-                          <Text style={[styles.pkgBadgeText, { color: d.package_type === 'p2p' ? '#4CAF50' : Colors.primary }]}>
-                            {(d.package_type ?? 'IPTV').toUpperCase()}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.deviceMacRow}>
-                        <Text style={styles.deviceMac}>{d.mac_address}</Text>
-                        <Pressable
-                          style={styles.macCopyBtn}
-                          hitSlop={8}
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            Clipboard.setString(d.mac_address);
-                            Alert.alert('MAC copiado!', d.mac_address);
-                          }}
-                        >
-                          <Ionicons name="copy-outline" size={12} color={Colors.primary} />
-                        </Pressable>
-                      </View>
-                      <View style={styles.deviceMeta}>
-                        <Text style={[styles.deviceMetaText, { color: isOnline(d.last_seen_at) ? '#4CAF50' : Colors.textMuted }]}>
-                          {isOnline(d.last_seen_at) ? '● Online' : `Visto: ${formatLastSeen(d.last_seen_at)}`}
-                        </Text>
-                        {d.expires_at ? (
-                          <Text style={[styles.deviceMetaText, { color: new Date(d.expires_at) < new Date() ? Colors.error : Colors.textMuted }]}>
-                            {formatExpiry(d.expires_at)}
-                          </Text>
-                        ) : null}
-                      </View>
+                <Pressable
+                  key={d.id}
+                  style={styles.deviceCard}
+                  onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
+                >
+                  <View style={[styles.statusDot, {
+                    backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated && !d.blocked_reason ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800'
+                  }]} />
+                  <View style={{ flex: 1 }}>
+                    {/* Client name prominent */}
+                    <Text style={styles.deviceClientName} numberOfLines={1}>
+                      {d.client_name || 'Cliente sem nome'}
+                    </Text>
+                    {/* MAC with copy button */}
+                    <View style={styles.deviceMacRow}>
+                      <Text style={styles.deviceMac}>{d.mac_address}</Text>
+                      <Pressable
+                        style={styles.macCopyBtn}
+                        hitSlop={8}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          Clipboard.setString(d.mac_address);
+                          Alert.alert('MAC copiado!', d.mac_address);
+                        }}
+                      >
+                        <Ionicons name="copy-outline" size={12} color={Colors.primary} />
+                      </Pressable>
                     </View>
-                    <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-                  </Pressable>
+                    {/* Status and expiry */}
+                    <View style={styles.deviceMeta}>
+                      <Text style={[styles.deviceMetaText, { color: isOnline(d.last_seen_at) ? '#4CAF50' : Colors.textMuted }]}>
+                        {isOnline(d.last_seen_at) ? '● Online' : d.blocked_reason ? '⛔ Bloqueado' : d.activated ? '✓ Ativo' : '⏳ Pendente'}
+                      </Text>
+                      {d.activated && !d.blocked_reason && d.expires_at ? (
+                        <Text style={[styles.deviceMetaText, { color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50', fontWeight: '600' }]}>
+                          {new Date(d.expires_at) < new Date()
+                            ? 'Expirado'
+                            : `Vence ${new Date(d.expires_at).toLocaleDateString('pt-BR')}`}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                </Pressable>
               ))
             )}
           </View>
@@ -573,19 +683,131 @@ export default function RepPanelScreen() {
               <Text style={styles.addCardSub}>
                 Você tem <Text style={{ color: '#FFD700', fontWeight: '700' }}>{rep?.credits ?? 0} crédito(s)</Text> disponíveis
               </Text>
-              <ActivationForm
-                form={addForm}
-                setForm={setAddForm}
-                sources={sources}
-                showDays
-                dayOptions={[
-                  { label: '30d', days: '30', credits: 1 },
-                  { label: '60d', days: '60', credits: 2 },
-                  { label: '90d', days: '90', credits: 3 },
-                  { label: '180d', days: '180', credits: 6 },
-                  { label: '1 ano', days: '365', credits: 13 },
-                ]}
-              />
+
+              {/* MAC */}
+              <Text style={styles.fieldLabel}>MAC do dispositivo *</Text>
+              <View style={[styles.inputWrap, { borderColor: addForm.mac.length >= 17 ? 'rgba(76,175,80,0.5)' : 'rgba(255,255,255,0.08)' }]}>
+                <Ionicons name="hardware-chip-outline" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="XX:XX:XX:XX:XX:XX"
+                  placeholderTextColor={Colors.textMuted}
+                  value={addForm.mac}
+                  onChangeText={handleAddMacChange}
+                  autoCapitalize="characters"
+                />
+                {addLookingUp ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
+              </View>
+              {addForm.mac.length >= 17 && !addLookingUp && (
+                <Text style={styles.lookupHint}>
+                  {addForm.clientName ? `✓ Cliente encontrado: ${addForm.clientName}` : 'MAC não cadastrado — novo cliente'}
+                </Text>
+              )}
+
+              {/* Client name */}
+              <Text style={styles.fieldLabel}>Nome do cliente</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="person-outline" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Nome do cliente (opcional)"
+                  placeholderTextColor={Colors.textMuted}
+                  value={addForm.clientName}
+                  onChangeText={v => setAddForm(f => ({ ...f, clientName: v }))}
+                />
+              </View>
+
+              {/* Source */}
+              <Text style={styles.fieldLabel}>Fonte de conteúdo *</Text>
+              {sources.length === 0 ? (
+                <View style={styles.noSourcesWarn}>
+                  <Ionicons name="warning-outline" size={16} color="#FF9800" />
+                  <Text style={styles.noSourcesText}> Sem fontes disponíveis. Solicite ao administrador.</Text>
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {sources.map((s: Source) => (
+                      <Pressable
+                        key={s.id}
+                        style={[styles.sourceChip, addForm.sourceId === s.id && styles.sourceChipActive]}
+                        onPress={() => setAddForm(f => ({ ...f, sourceId: s.id }))}
+                      >
+                        <Text style={[styles.sourceChipText, addForm.sourceId === s.id && { color: '#fff' }]}>{s.name}</Text>
+                        <Text style={[styles.sourceChipSub, addForm.sourceId === s.id && { color: 'rgba(255,255,255,0.7)' }]}>{s.active_macs ?? 0}/{s.max_connections}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+
+              {/* Package type */}
+              <Text style={styles.fieldLabel}>Tipo de pacote *</Text>
+              <View style={styles.pkgRow}>
+                {(['iptv', 'p2p'] as const).map(pkg => (
+                  <Pressable
+                    key={pkg}
+                    style={[styles.pkgBtn, addForm.packageType === pkg && styles.pkgBtnActive]}
+                    onPress={() => setAddForm(f => ({ ...f, packageType: pkg }))}
+                  >
+                    <Ionicons name={pkg === 'iptv' ? 'tv-outline' : 'wifi-outline'} size={18} color={addForm.packageType === pkg ? '#fff' : Colors.textMuted} />
+                    <Text style={[styles.pkgBtnText, addForm.packageType === pkg && { color: '#fff' }]}>{pkg.toUpperCase()}</Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {/* Access period — presets + custom date */}
+              <Text style={styles.fieldLabel}>Prazo de acesso *</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[
+                    { label: '30d', days: '30', credits: 1 },
+                    { label: '60d', days: '60', credits: 2 },
+                    { label: '90d', days: '90', credits: 3 },
+                    { label: '180d', days: '180', credits: 6 },
+                    { label: '1 ano', days: '365', credits: 13 },
+                  ].map(opt => (
+                    <Pressable
+                      key={opt.days}
+                      style={[styles.daysBtn, addForm.days === opt.days && styles.daysBtnActive]}
+                      onPress={() => applyPresetDays(opt.days)}
+                    >
+                      <Text style={[styles.daysBtnLabel, addForm.days === opt.days && { color: '#fff' }]}>{opt.label}</Text>
+                      <Text style={[styles.daysBtnCredits, addForm.days === opt.days && { color: 'rgba(255,255,255,0.75)' }]}>{opt.credits} cr.</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </ScrollView>
+
+              {/* Custom date input */}
+              <View style={styles.dateRow}>
+                <View style={[styles.inputWrap, { flex: 1, marginBottom: 0 }]}>
+                  <Ionicons name="calendar-outline" size={16} color={Colors.textMuted} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Data (DD/MM/AAAA)"
+                    placeholderTextColor={Colors.textMuted}
+                    value={addForm.expiresDateStr}
+                    onChangeText={handleAddDateChange}
+                    keyboardType="numeric"
+                    maxLength={10}
+                  />
+                </View>
+                <View style={styles.daysCountBadge}>
+                  <Text style={styles.daysCountText}>{addForm.days || '—'}</Text>
+                  <Text style={styles.daysCountLabel}>dias</Text>
+                </View>
+              </View>
+
+              {addForm.days ? (
+                <View style={styles.creditsCostRow}>
+                  <Ionicons name="wallet-outline" size={14} color="#FFD700" />
+                  <Text style={styles.creditsCostText}>
+                    Custo: {Math.ceil(parseInt(addForm.days || '0') / 30)} crédito(s) para {addForm.days} dias
+                  </Text>
+                </View>
+              ) : null}
+
               <Pressable
                 style={[styles.activateBtn, (addLoading || sources.length === 0) && { opacity: 0.5 }]}
                 onPress={handleAddDevice}
@@ -610,12 +832,104 @@ export default function RepPanelScreen() {
                 Libere acesso de 1 a 6 horas sem consumir créditos.{'\n'}
                 <Text style={{ color: Colors.error }}>Após o prazo, o acesso é bloqueado automaticamente.</Text>
               </Text>
-              <ActivationForm
-                form={testForm}
-                setForm={setTestForm as any}
-                sources={sources}
-                showHours
-              />
+
+              {/* MAC */}
+              <Text style={styles.fieldLabel}>MAC do dispositivo *</Text>
+              <View style={[styles.inputWrap, { borderColor: testForm.mac.length >= 17 ? 'rgba(76,175,80,0.5)' : 'rgba(255,255,255,0.08)' }]}>
+                <Ionicons name="hardware-chip-outline" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="XX:XX:XX:XX:XX:XX"
+                  placeholderTextColor={Colors.textMuted}
+                  value={testForm.mac}
+                  onChangeText={handleTestMacChange}
+                  autoCapitalize="characters"
+                />
+                {testLookingUp ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
+              </View>
+              {testForm.mac.length >= 17 && !testLookingUp && (
+                <Text style={styles.lookupHint}>
+                  {testForm.clientName ? `✓ Cliente encontrado: ${testForm.clientName}` : 'MAC não cadastrado — novo cliente'}
+                </Text>
+              )}
+
+              {/* Client name */}
+              <Text style={styles.fieldLabel}>Nome do cliente</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="person-outline" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Nome do cliente (opcional)"
+                  placeholderTextColor={Colors.textMuted}
+                  value={testForm.clientName}
+                  onChangeText={v => setTestForm(f => ({ ...f, clientName: v }))}
+                />
+              </View>
+
+              {/* Source */}
+              <Text style={styles.fieldLabel}>Fonte de conteúdo *</Text>
+              {sources.length === 0 ? (
+                <View style={styles.noSourcesWarn}>
+                  <Ionicons name="warning-outline" size={16} color="#FF9800" />
+                  <Text style={styles.noSourcesText}> Sem fontes disponíveis. Solicite ao administrador.</Text>
+                </View>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {sources.map((s: Source) => (
+                      <Pressable
+                        key={s.id}
+                        style={[styles.sourceChip, testForm.sourceId === s.id && styles.sourceChipActive]}
+                        onPress={() => setTestForm(f => ({ ...f, sourceId: s.id }))}
+                      >
+                        <Text style={[styles.sourceChipText, testForm.sourceId === s.id && { color: '#fff' }]}>{s.name}</Text>
+                        <Text style={[styles.sourceChipSub, testForm.sourceId === s.id && { color: 'rgba(255,255,255,0.7)' }]}>{s.active_macs ?? 0}/{s.max_connections}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+
+              {/* Package type */}
+              <Text style={styles.fieldLabel}>Tipo de pacote *</Text>
+              <View style={styles.pkgRow}>
+                {(['iptv', 'p2p'] as const).map(pkg => (
+                  <Pressable
+                    key={pkg}
+                    style={[styles.pkgBtn, testForm.packageType === pkg && styles.pkgBtnActive]}
+                    onPress={() => setTestForm(f => ({ ...f, packageType: pkg }))}
+                  >
+                    <Ionicons name={pkg === 'iptv' ? 'tv-outline' : 'wifi-outline'} size={18} color={testForm.packageType === pkg ? '#fff' : Colors.textMuted} />
+                    <Text style={[styles.pkgBtnText, testForm.packageType === pkg && { color: '#fff' }]}>{pkg.toUpperCase()}</Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {/* Hours */}
+              <Text style={styles.fieldLabel}>Horas de teste (1–6h) *</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                {['1', '2', '3', '4', '6'].map(h => (
+                  <Pressable
+                    key={h}
+                    style={[styles.daysBtn, testForm.hours === h && styles.daysBtnActive, { minWidth: 52 }]}
+                    onPress={() => setTestForm(f => ({ ...f, hours: h }))}
+                  >
+                    <Text style={[styles.daysBtnLabel, testForm.hours === h && { color: '#fff' }]}>{h}h</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={styles.inputWrap}>
+                <Ionicons name="time-outline" size={16} color={Colors.textMuted} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ou digite as horas (1-6)"
+                  placeholderTextColor={Colors.textMuted}
+                  value={testForm.hours}
+                  onChangeText={v => setTestForm(f => ({ ...f, hours: v.replace(/\D/g, '') }))}
+                  keyboardType="number-pad"
+                />
+              </View>
+
               <Pressable
                 style={[styles.activateBtn, { backgroundColor: '#FF9800' }, (testLoading || sources.length === 0) && { opacity: 0.5 }]}
                 onPress={handleTestActivation}
@@ -649,9 +963,15 @@ export default function RepPanelScreen() {
                       </View>
                     )}
 
+                    {/* Client name prominent */}
+                    <View style={styles.clientNameBanner}>
+                      <Ionicons name="person-circle-outline" size={20} color={Colors.primary} />
+                      <Text style={styles.clientNameBannerText}>
+                        {selectedDevice.client_name || 'Cliente sem nome'}
+                      </Text>
+                    </View>
+
                     {[
-                      { icon: 'person-outline', label: 'Cliente', value: selectedDevice.client_name || '—' },
-                      { icon: 'mail-outline', label: 'E-mail', value: selectedDevice.email },
                       { icon: 'tv-outline', label: 'Pacote', value: (selectedDevice.package_type ?? 'iptv').toUpperCase() },
                       { icon: 'server-outline', label: 'Fonte', value: selectedDevice.sources?.name ?? '—' },
                       { icon: 'time-outline', label: 'Último acesso', value: formatLastSeen(selectedDevice.last_seen_at) },
@@ -695,14 +1015,14 @@ export default function RepPanelScreen() {
                     {selectedDevice.expires_at && (
                       <View style={styles.detailRow}>
                         <Ionicons name="calendar-outline" size={14} color={Colors.textMuted} />
-                        <Text style={styles.detailLabel}>Expira</Text>
-                        <Text style={[styles.detailValue, { color: new Date(selectedDevice.expires_at) < new Date() ? Colors.error : '#4CAF50' }]}>
-                          {new Date(selectedDevice.expires_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        <Text style={styles.detailLabel}>Vencimento</Text>
+                        <Text style={[styles.detailValue, { color: new Date(selectedDevice.expires_at) < new Date() ? Colors.error : '#4CAF50', fontWeight: '700' }]}>
+                          {new Date(selectedDevice.expires_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
                         </Text>
                       </View>
                     )}
 
-                    {/* Renew button — prominent green */}
+                    {/* Renew button */}
                     <Pressable
                       style={[styles.renewBtn, actionLoading && { opacity: 0.5 }]}
                       onPress={() => { setRenewDays('30'); setRenewModal(true); }}
@@ -718,19 +1038,11 @@ export default function RepPanelScreen() {
 
                     {/* Secondary actions */}
                     <View style={[styles.modalActions, { marginTop: 8 }]}>
-                      <Pressable
-                        style={[styles.modalActionBtn, { backgroundColor: '#FF9800' }]}
-                        onPress={handleDeactivate}
-                        disabled={actionLoading}
-                      >
+                      <Pressable style={[styles.modalActionBtn, { backgroundColor: '#FF9800' }]} onPress={handleDeactivate} disabled={actionLoading}>
                         <Ionicons name="pause-circle-outline" size={16} color="#fff" />
                         <Text style={styles.modalActionText}> Desativar</Text>
                       </Pressable>
-                      <Pressable
-                        style={[styles.modalActionBtn, { backgroundColor: Colors.error }]}
-                        onPress={() => { setBlockReason(''); setBlockModal(true); }}
-                        disabled={actionLoading}
-                      >
+                      <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReason(''); setBlockModal(true); }} disabled={actionLoading}>
                         <Ionicons name="ban-outline" size={16} color="#fff" />
                         <Text style={styles.modalActionText}> Bloquear</Text>
                       </Pressable>
@@ -768,35 +1080,24 @@ export default function RepPanelScreen() {
             <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, paddingBottom: 24 }]}>
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>Renovar Acesso</Text>
-
-              {/* Device info */}
               {selectedDevice && (
                 <View style={styles.renewDeviceInfo}>
-                  <Ionicons name="hardware-chip-outline" size={13} color={Colors.textMuted} />
+                  <Ionicons name="person-circle-outline" size={13} color={Colors.textMuted} />
                   <Text style={styles.renewDeviceInfoText} numberOfLines={1}>
-                    {selectedDevice.client_name ? `${selectedDevice.client_name} — ` : ''}{selectedDevice.mac_address}
+                    {selectedDevice.client_name || selectedDevice.mac_address}
                   </Text>
                 </View>
               )}
-
-              {/* Current expiry */}
               {selectedDevice?.expires_at && (
                 <View style={[styles.renewCurrentExpiry, { backgroundColor: new Date(selectedDevice.expires_at) < new Date() ? 'rgba(229,0,0,0.08)' : 'rgba(76,175,80,0.08)' }]}>
-                  <Ionicons
-                    name="calendar-outline"
-                    size={13}
-                    color={new Date(selectedDevice.expires_at) < new Date() ? Colors.error : '#4CAF50'}
-                  />
+                  <Ionicons name="calendar-outline" size={13} color={new Date(selectedDevice.expires_at) < new Date() ? Colors.error : '#4CAF50'} />
                   <Text style={[styles.renewCurrentExpiryText, { color: new Date(selectedDevice.expires_at) < new Date() ? Colors.error : '#4CAF50' }]}>
                     {new Date(selectedDevice.expires_at) < new Date() ? 'Expirado em ' : 'Vencimento atual: '}
                     {new Date(selectedDevice.expires_at).toLocaleDateString('pt-BR')}
                   </Text>
                 </View>
               )}
-
               <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Dias a adicionar *</Text>
-
-              {/* Preset buttons */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   {[
@@ -817,8 +1118,6 @@ export default function RepPanelScreen() {
                   ))}
                 </View>
               </ScrollView>
-
-              {/* Custom days input */}
               <View style={styles.inputWrap}>
                 <Ionicons name="calendar-outline" size={16} color={Colors.textMuted} />
                 <TextInput
@@ -830,8 +1129,6 @@ export default function RepPanelScreen() {
                   keyboardType="number-pad"
                 />
               </View>
-
-              {/* Credit cost */}
               {renewDays && parseInt(renewDays) > 0 ? (
                 <View style={styles.creditsCostRow}>
                   <Ionicons name="wallet-outline" size={14} color="#FFD700" />
@@ -840,8 +1137,6 @@ export default function RepPanelScreen() {
                   </Text>
                 </View>
               ) : null}
-
-              {/* New expiry preview */}
               {renewDays && parseInt(renewDays) > 0 ? (
                 <View style={styles.renewExpiryPreview}>
                   <Ionicons name="checkmark-circle-outline" size={14} color="#4CAF50" />
@@ -850,19 +1145,11 @@ export default function RepPanelScreen() {
                   </Text>
                 </View>
               ) : null}
-
               <View style={[styles.modalActions, { marginTop: 14 }]}>
-                <Pressable
-                  style={[styles.modalActionBtn, { backgroundColor: 'rgba(255,255,255,0.07)', flex: 1 }]}
-                  onPress={() => { if (!renewLoading) setRenewModal(false); }}
-                >
+                <Pressable style={[styles.modalActionBtn, { backgroundColor: 'rgba(255,255,255,0.07)', flex: 1 }]} onPress={() => { if (!renewLoading) setRenewModal(false); }}>
                   <Text style={[styles.modalActionText, { color: Colors.textSecondary }]}>Cancelar</Text>
                 </Pressable>
-                <Pressable
-                  style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#4CAF50' }, renewLoading && { opacity: 0.6 }]}
-                  onPress={handleRenew}
-                  disabled={renewLoading}
-                >
+                <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#4CAF50' }, renewLoading && { opacity: 0.6 }]} onPress={handleRenew} disabled={renewLoading}>
                   {renewLoading
                     ? <ActivityIndicator color="#fff" size="small" />
                     : <><Ionicons name="refresh-circle-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Renovar</Text></>
@@ -919,173 +1206,6 @@ export default function RepPanelScreen() {
         </KeyboardAvoidingView>
       </Modal>
     </View>
-  );
-}
-
-// ── Reusable activation form ──────────────────────────────────────────────────
-function ActivationForm({
-  form, setForm, sources, showDays, showHours, dayOptions,
-}: {
-  form: any;
-  setForm: (f: any) => void;
-  sources: Source[];
-  showDays?: boolean;
-  showHours?: boolean;
-  dayOptions?: { label: string; days: string; credits: number }[];
-}) {
-  return (
-    <>
-      <Text style={styles.fieldLabel}>MAC do dispositivo *</Text>
-      <View style={styles.inputWrap}>
-        <Ionicons name="hardware-chip-outline" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.input}
-          placeholder="XX:XX:XX:XX:XX:XX"
-          placeholderTextColor={Colors.textMuted}
-          value={form.mac}
-          onChangeText={(v: string) => setForm((f: any) => ({ ...f, mac: v }))}
-          autoCapitalize="characters"
-        />
-      </View>
-
-      <Text style={styles.fieldLabel}>Nome do cliente</Text>
-      <View style={styles.inputWrap}>
-        <Ionicons name="person-outline" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.input}
-          placeholder="Nome completo do cliente"
-          placeholderTextColor={Colors.textMuted}
-          value={form.clientName}
-          onChangeText={(v: string) => setForm((f: any) => ({ ...f, clientName: v }))}
-        />
-      </View>
-
-      <Text style={styles.fieldLabel}>E-mail do cliente *</Text>
-      <View style={styles.inputWrap}>
-        <Ionicons name="mail-outline" size={16} color={Colors.textMuted} />
-        <TextInput
-          style={styles.input}
-          placeholder="cliente@email.com"
-          placeholderTextColor={Colors.textMuted}
-          value={form.email}
-          onChangeText={(v: string) => setForm((f: any) => ({ ...f, email: v }))}
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
-      </View>
-
-      <Text style={styles.fieldLabel}>Fonte de conteúdo *</Text>
-      {sources.length === 0 ? (
-        <View style={styles.noSourcesWarn}>
-          <Ionicons name="warning-outline" size={16} color="#FF9800" />
-          <Text style={styles.noSourcesText}> Sem fontes disponíveis. Solicite ao administrador.</Text>
-        </View>
-      ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            {sources.map((s: Source) => (
-              <Pressable
-                key={s.id}
-                style={[styles.sourceChip, form.sourceId === s.id && styles.sourceChipActive]}
-                onPress={() => setForm((f: any) => ({ ...f, sourceId: s.id }))}
-              >
-                <Text style={[styles.sourceChipText, form.sourceId === s.id && { color: '#fff' }]}>{s.name}</Text>
-                <Text style={[styles.sourceChipSub, form.sourceId === s.id && { color: 'rgba(255,255,255,0.7)' }]}>{s.active_macs ?? 0}/{s.max_connections}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </ScrollView>
-      )}
-
-      <Text style={styles.fieldLabel}>Tipo de pacote *</Text>
-      <View style={styles.pkgRow}>
-        {(['iptv', 'p2p'] as const).map(pkg => (
-          <Pressable
-            key={pkg}
-            style={[styles.pkgBtn, form.packageType === pkg && styles.pkgBtnActive]}
-            onPress={() => setForm((f: any) => ({ ...f, packageType: pkg }))}
-          >
-            <Ionicons
-              name={pkg === 'iptv' ? 'tv-outline' : 'wifi-outline'}
-              size={18}
-              color={form.packageType === pkg ? '#fff' : Colors.textMuted}
-            />
-            <Text style={[styles.pkgBtnText, form.packageType === pkg && { color: '#fff' }]}>
-              {pkg.toUpperCase()}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {showHours && (
-        <>
-          <Text style={styles.fieldLabel}>Horas de teste (1–6h) *</Text>
-          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
-            {['1', '2', '3', '4', '6'].map(h => (
-              <Pressable
-                key={h}
-                style={[styles.daysBtn, form.hours === h && styles.daysBtnActive, { minWidth: 52 }]}
-                onPress={() => setForm((f: any) => ({ ...f, hours: h }))}
-              >
-                <Text style={[styles.daysBtnLabel, form.hours === h && { color: '#fff' }]}>{h}h</Text>
-              </Pressable>
-            ))}
-          </View>
-          <View style={styles.inputWrap}>
-            <Ionicons name="time-outline" size={16} color={Colors.textMuted} />
-            <TextInput
-              style={styles.input}
-              placeholder="Ou digite as horas (1-6)"
-              placeholderTextColor={Colors.textMuted}
-              value={form.hours}
-              onChangeText={(v: string) => setForm((f: any) => ({ ...f, hours: v.replace(/\D/g, '') }))}
-              keyboardType="number-pad"
-            />
-          </View>
-        </>
-      )}
-
-      {showDays && dayOptions && (
-        <>
-          <Text style={styles.fieldLabel}>Dias de acesso *</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {dayOptions.map(opt => (
-                <Pressable
-                  key={opt.days}
-                  style={[styles.daysBtn, form.days === opt.days && styles.daysBtnActive]}
-                  onPress={() => setForm((f: any) => ({ ...f, days: opt.days }))}
-                >
-                  <Text style={[styles.daysBtnLabel, form.days === opt.days && { color: '#fff' }]}>{opt.label}</Text>
-                  <Text style={[styles.daysBtnCredits, form.days === opt.days && { color: 'rgba(255,255,255,0.75)' }]}>
-                    {opt.credits} cr.
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </ScrollView>
-          <View style={styles.inputWrap}>
-            <Ionicons name="calendar-outline" size={16} color={Colors.textMuted} />
-            <TextInput
-              style={styles.input}
-              placeholder="Ou digite o número de dias"
-              placeholderTextColor={Colors.textMuted}
-              value={form.days}
-              onChangeText={(v: string) => setForm((f: any) => ({ ...f, days: v.replace(/\D/g, '') }))}
-              keyboardType="number-pad"
-            />
-          </View>
-          {form.days ? (
-            <View style={styles.creditsCostRow}>
-              <Ionicons name="wallet-outline" size={14} color="#FFD700" />
-              <Text style={styles.creditsCostText}>
-                Custo: {Math.ceil(parseInt(form.days || '0') / 30)} crédito(s) para {form.days} dias
-              </Text>
-            </View>
-          ) : null}
-        </>
-      )}
-    </>
   );
 }
 
@@ -1164,16 +1284,13 @@ const styles = StyleSheet.create({
   filterChipTextActive: { color: Colors.primary },
   searchWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a1a1a', borderRadius: 10, paddingHorizontal: 12, height: 40, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 8, marginBottom: 10 },
   searchInput: { flex: 1, color: '#fff', fontSize: 13 },
-  macCopyBtn: { width: 24, height: 24, borderRadius: 5, backgroundColor: 'rgba(229,0,0,0.1)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)', marginLeft: 6 },
-  deviceMacRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
-  copyIconBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(229,0,0,0.1)', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(229,0,0,0.25)' },
-  copyIconLabel: { color: Colors.primary, fontSize: 10, fontWeight: '700' },
   deviceCard: { backgroundColor: '#141414', borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', flexDirection: 'row', alignItems: 'center', gap: 10 },
-  deviceCardRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
-  statusDot: { width: 10, height: 10, borderRadius: 5 },
-  deviceEmail: { color: '#fff', fontSize: 13, fontWeight: '600', flex: 1 },
-  deviceMac: { color: Colors.textMuted, fontSize: 10, fontFamily: 'monospace' },
-  deviceMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 3 },
+  statusDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
+  deviceClientName: { color: '#fff', fontSize: 14, fontWeight: '700', marginBottom: 2 },
+  deviceMacRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 },
+  deviceMac: { color: Colors.textMuted, fontSize: 10, fontFamily: 'monospace', flex: 1 },
+  macCopyBtn: { width: 22, height: 22, borderRadius: 5, backgroundColor: 'rgba(229,0,0,0.1)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)' },
+  deviceMeta: { flexDirection: 'row', justifyContent: 'space-between' },
   deviceMetaText: { color: Colors.textMuted, fontSize: 10 },
   emptyState: { alignItems: 'center', paddingTop: 40, gap: 10 },
   emptyText: { color: Colors.textMuted, fontSize: 14 },
@@ -1186,6 +1303,11 @@ const styles = StyleSheet.create({
   fieldLabel: { color: Colors.textSecondary, fontSize: 11, fontWeight: '600', marginBottom: 6, marginTop: 6, alignSelf: 'flex-start', width: '100%' },
   inputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a1a1a', borderRadius: 10, paddingHorizontal: 12, height: 48, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', gap: 8, marginBottom: 10, width: '100%' },
   input: { flex: 1, color: '#fff', fontSize: 14 },
+  lookupHint: { color: '#4CAF50', fontSize: 11, marginBottom: 8, alignSelf: 'flex-start', paddingHorizontal: 2 },
+  dateRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10, width: '100%' },
+  daysCountBadge: { alignItems: 'center', backgroundColor: 'rgba(229,0,0,0.1)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: 'rgba(229,0,0,0.25)', minWidth: 60 },
+  daysCountText: { color: Colors.primary, fontSize: 16, fontWeight: '800' },
+  daysCountLabel: { color: Colors.textMuted, fontSize: 9, fontWeight: '600' },
   sourceChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', alignItems: 'center' },
   sourceChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   sourceChipText: { color: Colors.textSecondary, fontSize: 12, fontWeight: '600' },
@@ -1204,28 +1326,29 @@ const styles = StyleSheet.create({
   noSourcesText: { color: '#FF9800', fontSize: 12, flex: 1 },
   activateBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#4CAF50', borderRadius: 12, height: 52, width: '100%', marginTop: 4, shadowColor: '#4CAF50', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 10, elevation: 8 },
   activateBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  // Renew button in detail modal
   renewBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#4CAF50', borderRadius: 12, height: 52, marginTop: 16, marginBottom: 4, paddingHorizontal: 16, shadowColor: '#4CAF50', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 6 },
   renewBtnText: { color: '#fff', fontSize: 15, fontWeight: '700', flex: 1, textAlign: 'center' },
   renewCreditBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   renewCreditBadgeText: { color: '#FFD700', fontSize: 10, fontWeight: '700' },
-  // Renew modal elements
   renewDeviceInfo: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 10, marginBottom: 8 },
   renewDeviceInfoText: { color: Colors.textSecondary, fontSize: 12, flex: 1 },
   renewCurrentExpiry: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, padding: 10, marginBottom: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' },
   renewCurrentExpiryText: { fontSize: 12, fontWeight: '600' },
   renewExpiryPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(76,175,80,0.08)', borderRadius: 8, padding: 10, marginBottom: 4, borderWidth: 1, borderColor: 'rgba(76,175,80,0.25)' },
   renewExpiryPreviewText: { color: '#4CAF50', fontSize: 12, fontWeight: '600' },
-  // Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: '#141414', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 34, maxHeight: '90%', borderWidth: 1, borderBottomWidth: 0, borderColor: 'rgba(229,0,0,0.2)' },
   modalHandle: { width: 36, height: 4, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
   modalTitle: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 16, textAlign: 'center' },
   onlineBannerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(76,175,80,0.1)', borderRadius: 8, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(76,175,80,0.3)' },
   onlineBannerText: { color: '#4CAF50', fontSize: 12, fontWeight: '700' },
+  clientNameBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(229,0,0,0.08)', borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)' },
+  clientNameBannerText: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
   detailRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)', gap: 8 },
   detailLabel: { color: Colors.textMuted, fontSize: 12, width: 80 },
   detailValue: { color: '#fff', fontSize: 12, flex: 1, textAlign: 'right' },
+  copyIconBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(229,0,0,0.1)', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(229,0,0,0.25)' },
+  copyIconLabel: { color: Colors.primary, fontSize: 10, fontWeight: '700' },
   modalActions: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   modalActionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 10, height: 44 },
   modalActionText: { color: '#fff', fontSize: 13, fontWeight: '700' },

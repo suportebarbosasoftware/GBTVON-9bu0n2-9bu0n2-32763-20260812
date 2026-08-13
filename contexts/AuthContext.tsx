@@ -36,13 +36,14 @@ interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const EMAIL_KEY = 'gbtvon_user_email';
+const CLIENT_NAME_KEY = 'gbtvon_client_name';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [auth, setAuth] = useState<XtreamAuth | null>(null);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null); // kept for backward compat
+  const [clientName, setClientName] = useState<string | null>(null);
   const [macAddress, setMacAddress] = useState<string | null>(null);
   const [planName, setPlanName] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
@@ -103,17 +104,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function initAuth() {
     try {
-      const [storedEmail, mac, cached] = await Promise.all([
-        AsyncStorage.getItem(EMAIL_KEY),
+      const [storedName, mac, cached] = await Promise.all([
+        AsyncStorage.getItem(CLIENT_NAME_KEY),
         getDeviceId(),
         loadStoredActivation(),
       ]);
 
       setMacAddress(mac);
 
-      if (storedEmail) {
-        userEmailRef.current = storedEmail;
-        setUserEmail(storedEmail);
+      if (mac) {
+        // MAC is always the primary identifier — use it directly
+        userEmailRef.current = mac; // reuse ref as identifier
+        if (storedName) setClientName(storedName);
 
         if (cached) {
           // Apply cached state immediately so UI loads fast
@@ -122,7 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Do a fresh check in background with a timeout — don't block startup
         setIsLoading(false);
-        silentRefreshWithEmail(storedEmail);
+        silentRefreshWithEmail(mac);
         return;
       }
     } catch {}
@@ -177,36 +179,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function login(email: string, repCode?: string): Promise<{ success: boolean; status: string; error?: string; message?: string }> {
-    const normalizedEmail = email.toLowerCase().trim();
-    userEmailRef.current = normalizedEmail;
-    const result = await checkActivation(normalizedEmail, { repCode: repCode?.trim() || undefined });
+  async function login(nameOrEmail: string, repCode?: string): Promise<{ success: boolean; status: string; error?: string; message?: string }> {
+    // Use MAC as the primary identifier; store client name for display
+    const mac = await getDeviceId();
+    userEmailRef.current = mac;
+    setClientName(nameOrEmail.trim() || null);
+    setUserEmail(nameOrEmail.trim() || null);
 
-    setUserEmail(normalizedEmail);
+    const result = await checkActivation(mac, { repCode: repCode?.trim() || undefined, clientName: nameOrEmail.trim() || undefined });
+
     applyActivationResult(result);
 
     if (result.status === 'activated') {
       await Promise.all([
-        AsyncStorage.setItem(EMAIL_KEY, normalizedEmail),
+        AsyncStorage.setItem(CLIENT_NAME_KEY, nameOrEmail.trim()),
         storeActivation(result),
       ]);
       return { success: true, status: 'activated' };
     }
 
     if (result.status === 'pending') {
-      await AsyncStorage.setItem(EMAIL_KEY, normalizedEmail);
+      await AsyncStorage.setItem(CLIENT_NAME_KEY, nameOrEmail.trim());
       await storeActivation(result);
       return { success: false, status: 'pending', message: result.message || 'Aguardando ativação.' };
     }
 
     if (result.status === 'expired') {
-      await AsyncStorage.setItem(EMAIL_KEY, normalizedEmail);
+      await AsyncStorage.setItem(CLIENT_NAME_KEY, nameOrEmail.trim());
       await storeActivation(result);
       return { success: false, status: 'expired', message: result.message };
     }
 
     if (result.status === 'blocked_manual') {
-      await AsyncStorage.setItem(EMAIL_KEY, normalizedEmail);
+      await AsyncStorage.setItem(CLIENT_NAME_KEY, nameOrEmail.trim());
       await storeActivation(result);
       return { success: false, status: 'blocked_manual', message: result.message };
     }
@@ -229,11 +234,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     stopPolling();
     userEmailRef.current = null;
     await Promise.all([
-      AsyncStorage.removeItem(EMAIL_KEY),
+      AsyncStorage.removeItem(CLIENT_NAME_KEY),
       clearActivationCache(),
     ]);
     setAuth(null);
     setUserEmail(null);
+    setClientName(null);
     setPlanName(null);
     setExpiresAt(null);
     setActivationStatus(null);

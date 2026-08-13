@@ -238,24 +238,35 @@ export async function getRepSources(repId?: string): Promise<Source[]> {
 
 export async function activateRepDevice(payload: {
   mac: string;
-  email: string;
-  clientName: string;
+  email?: string;
+  clientName?: string;
   sourceId: string;
   packageType: 'iptv' | 'p2p';
   days: number;
+  expiresAtDate?: string;
 }): Promise<void> {
   await callRep('activateRepDevice', payload);
 }
 
 export async function activateRepTest(payload: {
   mac: string;
-  email: string;
-  clientName: string;
+  email?: string;
+  clientName?: string;
   sourceId: string;
   packageType: 'iptv' | 'p2p';
   hours: number;
 }): Promise<void> {
   await callRep('activateRepTest', payload);
+}
+
+/** Lookup a device by MAC address (to auto-fill client name) */
+export async function lookupDeviceByMac(mac: string): Promise<{ found: boolean; client_name?: string; email?: string }> {
+  try {
+    const data = await callRep('lookupDeviceByMac', { mac: mac.trim().toUpperCase() });
+    return data;
+  } catch {
+    return { found: false };
+  }
 }
 
 export async function deactivateRepDevice(deviceId: string): Promise<void> {

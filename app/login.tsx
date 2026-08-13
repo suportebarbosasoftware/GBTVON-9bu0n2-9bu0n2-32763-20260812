@@ -32,7 +32,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const { login } = useAuth();
 
-  const [email, setEmail] = useState('');
+  const [clientName, setClientName] = useState('');
   const [repCode, setRepCode] = useState('');
   const [repCodeValid, setRepCodeValid] = useState<boolean | null>(null); // null=unchecked, true=valid, false=invalid
   const [repCodeChecking, setRepCodeChecking] = useState(false);
@@ -60,10 +60,6 @@ export default function LoginScreen() {
     }
   }
 
-  function isValidEmail(e: string): boolean {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.toLowerCase().trim());
-  }
-
   // Debounce rep code validation
   function handleRepCodeChange(val: string) {
     const cleaned = val.replace(/\D/g, '');
@@ -84,9 +80,8 @@ export default function LoginScreen() {
   }
 
   async function handleLogin() {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) { setError('Digite seu e-mail para continuar.'); return; }
-    if (!isValidEmail(trimmedEmail)) { setError('E-mail inválido. Verifique e tente novamente.'); return; }
+    const trimmedName = clientName.trim();
+    if (!trimmedName) { setError('Digite seu nome para continuar.'); return; }
     if (!repCode.trim()) { setError('Digite o código do representante para solicitar ativação.'); return; }
     if (repCodeValid === false) { setError('Código de representante inválido. Verifique e tente novamente.'); return; }
 
@@ -94,7 +89,7 @@ export default function LoginScreen() {
     setError('');
     setPendingInfo({ visible: false, message: '' });
 
-    const result = await login(trimmedEmail, repCode.trim());
+    const result = await login(trimmedName, repCode.trim());
     setLoading(false);
 
     if (result.success && result.status === 'activated') {
@@ -117,7 +112,7 @@ export default function LoginScreen() {
 
   async function handleRefresh() {
     setLoading(true);
-    const r = await login(email, repCode.trim() || undefined);
+    const r = await login(clientName.trim() || 'Cliente', repCode.trim() || undefined);
     setLoading(false);
     if (r.success) { router.replace('/(tabs)'); return; }
     if (r.status === 'pending') setPendingInfo({ visible: true, message: r.message || '' });
@@ -169,26 +164,25 @@ export default function LoginScreen() {
               <Text style={[styles.cardTitle, isTV && { fontSize: F.xl }]}>Entrar no GBTVON</Text>
               <Text style={[styles.cardSubtitle, isTV && { fontSize: F.sm }]}>
                 {isTV
-                  ? 'Use o teclado virtual ou um teclado USB para digitar seu e-mail'
-                  : 'Digite seu e-mail e o código do seu representante'}
+                  ? 'Use o teclado virtual ou um teclado USB para digitar seu nome'
+                  : 'Digite seu nome e o código do seu representante'}
               </Text>
 
-              {/* Email input */}
+              {/* Client name input */}
               <View style={[styles.inputWrap, isTV && styles.inputWrapTV]}>
-                <Ionicons name="mail-outline" size={isTV ? 24 : 18} color={Colors.textMuted} style={styles.inputIcon} />
+                <Ionicons name="person-outline" size={isTV ? 24 : 18} color={Colors.textMuted} style={styles.inputIcon} />
                 <TextInput
                   style={[styles.input, isTV && { fontSize: F.md, color: '#fff' }]}
-                  placeholder="seu@email.com"
+                  placeholder="Seu nome completo"
                   placeholderTextColor={Colors.textMuted}
-                  value={email}
-                  onChangeText={t => { setEmail(t); setError(''); }}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
+                  value={clientName}
+                  onChangeText={t => { setClientName(t); setError(''); }}
+                  autoCapitalize="words"
                   autoCorrect={false}
                   returnKeyType="next"
                 />
-                {email.length > 0 && (
-                  <Pressable onPress={() => setEmail('')} hitSlop={8}>
+                {clientName.length > 0 && (
+                  <Pressable onPress={() => setClientName('')} hitSlop={8}>
                     <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
                   </Pressable>
                 )}
@@ -255,7 +249,7 @@ export default function LoginScreen() {
               </TVFocusable>
 
               <Text style={[styles.infoHint, isTV && { fontSize: F.xs }]}>
-                Seu acesso será verificado após o representante ativar seu dispositivo
+                Informe seu nome e o código do representante para solicitar ativação
               </Text>
             </>
           ) : (
@@ -290,7 +284,7 @@ export default function LoginScreen() {
               </TVFocusable>
 
               <TVFocusable style={styles.backBtn} onPress={() => setPendingInfo({ visible: false, message: '' })}>
-                <Text style={[styles.backBtnText, isTV && { fontSize: F.sm }]}>Usar outro e-mail</Text>
+                <Text style={[styles.backBtnText, isTV && { fontSize: F.sm }]}>Voltar</Text>
               </TVFocusable>
             </View>
           )}

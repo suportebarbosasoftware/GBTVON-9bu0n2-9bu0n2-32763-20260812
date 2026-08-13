@@ -43,8 +43,8 @@ interface CachedActivation {
 
 /** Check device activation and get credentials if active */
 export async function checkActivation(
-  email: string,
-  options?: { markGracePeriod?: boolean; repCode?: string }
+  macOrEmail: string,
+  options?: { markGracePeriod?: boolean; repCode?: string; clientName?: string }
 ): Promise<ActivationResult> {
   try {
     const mac = await getDeviceId();
@@ -54,12 +54,12 @@ export async function checkActivation(
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.functions.invoke('device-check', {
       body: {
-        email,
         mac_address: mac,
         device_name: deviceName,
         platform,
         mark_grace_period: options?.markGracePeriod || false,
         rep_code: options?.repCode || undefined,
+        client_name: options?.clientName || undefined,
       },
     });
 

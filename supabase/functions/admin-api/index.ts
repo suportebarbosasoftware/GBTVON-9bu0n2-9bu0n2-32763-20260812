@@ -101,9 +101,9 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'activateRepDevice') {
-      const { repId, repPassword, mac, email, clientName, sourceId, packageType, days } = body;
+      const { repId, repPassword, mac, email, clientName, sourceId, packageType, days, expiresAtDate } = body;
       if (!await validateRep(repId, repPassword)) return authError();
-      if (!repId || !mac || !email || !sourceId || !days) throw new Error('Dados incompletos');
+      if (!repId || !mac || !sourceId || !days) throw new Error('Dados incompletos');
 
       const { data: rep } = await supabase
         .from('representatives')
@@ -147,9 +147,17 @@ Deno.serve(async (req) => {
       }
 
       const now = new Date().toISOString();
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + days);
-      const normalizedEmail = email.toLowerCase().trim();
+      // Use provided expiresAtDate or calculate from days
+      let expiresAt: Date;
+      if (expiresAtDate) {
+        expiresAt = new Date(expiresAtDate);
+      } else {
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + days);
+      }
+      const normalizedEmail = email
+        ? email.toLowerCase().trim()
+        : `mac_${mac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
 
       const { data: existingDev } = await supabase
         .from('devices')
@@ -213,7 +221,7 @@ Deno.serve(async (req) => {
     if (action === 'activateRepTest') {
       const { repId, repPassword, mac, email, clientName, sourceId, packageType, hours } = body;
       if (!await validateRep(repId, repPassword)) return authError();
-      if (!mac || !email || !sourceId || !hours) throw new Error('Dados incompletos');
+      if (!mac || !sourceId || !hours) throw new Error('Dados incompletos');
 
       const hoursNum = Math.min(Math.max(1, parseInt(hours)), 6);
 
@@ -250,7 +258,9 @@ Deno.serve(async (req) => {
 
       const now = new Date().toISOString();
       const expiresAt = new Date(Date.now() + hoursNum * 60 * 60 * 1000).toISOString();
-      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedEmail = email
+        ? email.toLowerCase().trim()
+        : `mac_${mac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
 
       const { data: existingDev } = await supabase
         .from('devices')
@@ -403,6 +413,19 @@ Deno.serve(async (req) => {
     }
 
     // ── Validate rep code (public — for client login screen) ──────────────────
+
+    if (action === 'lookupDeviceByMac') {
+      const { mac, repId, repPassword } = body;
+      if (!await validateRep(repId, repPassword)) return authError();
+      if (!mac) return json({ found: false });
+      const { data: dev } = await supabase
+        .from('devices')
+        .select('client_name, email, mac_address')
+        .eq('mac_address', mac.trim().toUpperCase())
+        .maybeSingle();
+      if (!dev) return json({ found: false });
+      return json({ found: true, client_name: dev.client_name || '', email: dev.email || '' });
+    }
 
     if (action === 'validateRepCode') {
       const { repNumber } = body;

@@ -1,5 +1,6 @@
 // device-check Edge Function — GBTVON
 // Registers a device and returns activation status + credentials if active
+// MAC is the primary identifier — email is optional (auto-generated from MAC if not provided)
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 
@@ -15,15 +16,19 @@ Deno.serve(async (req) => {
     );
 
     const body = await req.json();
-    const { email, mac_address, device_name, platform, mark_grace_period, rep_code } = body;
+    const { email, mac_address, device_name, platform, mark_grace_period, rep_code, client_name } = body;
 
-    if (!email || !mac_address) {
-      return new Response(JSON.stringify({ error: 'Email e MAC são obrigatórios.' }), {
+    if (!mac_address) {
+      return new Response(JSON.stringify({ error: 'MAC é obrigatório.' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    // Generate a synthetic email from MAC if none provided
+    const normalizedEmail = email
+      ? email.toLowerCase().trim()
+      : `mac_${mac_address.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
+
     const now = new Date().toISOString();
 
     // Resolve rep_id from rep_code if provided
@@ -46,10 +51,13 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existing) {
-      // Always update last_seen_at; link rep_id if not already set and code provided
+      // Always update last_seen_at; link rep_id and client_name if provided
       const updateData: any = { last_seen_at: now };
       if (existing.email !== normalizedEmail) updateData.email = normalizedEmail;
       if (repId && !existing.rep_id) updateData.rep_id = repId;
+      if (client_name && client_name.trim() && !existing.client_name) {
+        updateData.client_name = client_name.trim();
+      }
       await supabase.from('devices').update(updateData).eq('mac_address', mac_address);
 
       // ── MANUALLY BLOCKED ──────────────────────────────────────
@@ -132,12 +140,12 @@ Deno.serve(async (req) => {
 
           const { data: renewed } = await supabase
             .from('devices')
-            .select('*, plans(*)')
+            .select('*, plans(*), sources(*)')
             .eq('mac_address', mac_address)
             .maybeSingle();
 
           const renewedCred = renewed?.sources || renewed?.plans;
-        if (renewedCred) {
+          if (renewedCred) {
             return new Response(JSON.stringify({
               status: 'activated',
               credentials: {
@@ -184,6 +192,7 @@ Deno.serve(async (req) => {
       last_seen_at: now,
     };
     if (repId) insertData.rep_id = repId;
+    if (client_name && client_name.trim()) insertData.client_name = client_name.trim();
 
     const { error: insertError } = await supabase.from('devices').insert(insertData);
 
