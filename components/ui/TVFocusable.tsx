@@ -1,20 +1,21 @@
 /**
- * TVFocusable — GBTVON (v5 — Native Android)
+ * TVFocusable — GBTVON (v6 — Native Visual)
  *
  * Em Android TV / TV Box:
  *   Usa TVFocusableView (componente nativo Kotlin).
- *   O Android é a ÚNICA fonte da verdade para foco.
- *   onNativeFocus / onNativeBlur → isFocused → desenha borda + sombra + escala.
- *   onNativePress → chama onPress original.
- *   Nunca adivinhar foco por estado JS ou TVEventHandler.
+ *
+ *   O Android é a ÚNICA fonte da verdade.
+ *   O visual (borda vermelha + estrela) é desenhado DENTRO do Kotlin
+ *   em onFocusChanged → invalidate() → draw(Canvas).
+ *   Zero roundtrip JS. Zero dessincronia.
+ *
+ *   Os eventos onNativeFocus / onNativeBlur chegam ao JS apenas para
+ *   lógica de aplicação (ex: mudar aba ativa). Nunca para desenho.
  *
  * Em celular / tablet (IS_TV = false):
- *   Pressable padrão, sem anel vermelho.
- *
- * ⚠️  Qualquer Pressable INTERNO que não deve receber foco na TV
- *     deve ter focusable={false} ou ser substituído por View.
+ *   Pressable padrão com pressed opacity.
  */
-import React, { useState, useRef, forwardRef } from 'react';
+import React, { forwardRef } from 'react';
 import {
   Pressable,
   View,
@@ -39,7 +40,6 @@ type NativeTVFocusableProps = {
   children?: React.ReactNode;
 };
 
-// Only require on Android — other platforms fall through to Pressable
 const NativeTVFocusableView =
   Platform.OS === 'android'
     ? requireNativeComponent<NativeTVFocusableProps>('TVFocusableView')
@@ -49,15 +49,17 @@ const NativeTVFocusableView =
 
 interface TVFocusableProps extends PressableProps {
   style?: ViewStyle | ViewStyle[] | ((state: { pressed: boolean }) => ViewStyle);
-  /** Estilo aplicado quando focado (só TV) */
+  /**
+   * focusedStyle — aplicado ao Pressable em celular quando focado via teclado.
+   * Em Android TV é ignorado (o visual é nativo).
+   */
   focusedStyle?: ViewStyle;
   children: React.ReactNode;
   hasTVPreferredFocus?: boolean;
-  /** Scale ao focar. Default 1.04 */
   focusScale?: number;
-  /** @deprecated — mantido para compatibilidade */
+  /** @deprecated mantido para não quebrar chamadores */
   showAccentBar?: boolean;
-  /** @deprecated — mantido para compatibilidade */
+  /** @deprecated mantido para não quebrar chamadores */
   overlayBorderRadius?: number;
 }
 
@@ -79,48 +81,23 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
   delayLongPress,
   ...props
 }, ref) => {
-  const [isFocused, setIsFocused] = useState(false);
 
-  // ── Android TV: use native view ──────────────────────────────────────────
+  // ── Android TV: visual is 100% native, JS just routes events ────────────
   if (IS_TV && NativeTVFocusableView && Platform.OS === 'android') {
-    // Flatten base style (no function form in native props)
     const baseStyle: ViewStyle | ViewStyle[] =
       typeof style === 'function' ? (style({ pressed: false }) as ViewStyle) : (style ?? {});
-
-    const focusedOverride: ViewStyle = isFocused
-      ? {
-          borderWidth: 4,
-          borderColor: '#E50000',
-          shadowColor: '#E50000',
-          shadowOffset: { width: 0, height: 0 },
-          shadowOpacity: 1,
-          shadowRadius: 16,
-          elevation: 24,
-          transform: [{ scale: focusScale }],
-          zIndex: 20,
-          ...(focusedStyle ?? {}),
-        }
-      : {};
 
     return (
       <NativeTVFocusableView
         focusable={!disabled}
         disabled={!!disabled}
         hasTVPreferredFocus={hasTVPreferredFocus}
-        style={[baseStyle, focusedOverride]}
-        onNativeFocus={(e) => {
-          setIsFocused(true);
-          externalOnFocus?.(e as any);
-        }}
-        onNativeBlur={(e) => {
-          setIsFocused(false);
-          externalOnBlur?.(e as any);
-        }}
-        onNativePress={() => {
-          if (!disabled) onPress?.({} as any);
-        }}
+        style={baseStyle}
+        onNativeFocus={(e) => externalOnFocus?.(e as any)}
+        onNativeBlur={(e) => externalOnBlur?.(e as any)}
+        onNativePress={() => { if (!disabled) onPress?.({} as any); }}
       >
-        {/* Block inner views from stealing D-Pad focus */}
+        {/* Prevent inner views from stealing D-Pad focus */}
         <View style={styles.innerBlock} pointerEvents="box-none">
           {children}
         </View>
@@ -128,53 +105,21 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
     );
   }
 
-  // ── Fallback: Pressable (mobile + non-Android TV) ────────────────────────
-  const handleFocus = (e: any) => {
-    setIsFocused(true);
-    externalOnFocus?.(e);
-  };
-
-  const handleBlur = (e: any) => {
-    setIsFocused(false);
-    externalOnBlur?.(e);
-  };
-
+  // ── Fallback: Pressable (mobile / non-Android) ───────────────────────────
   return (
     <Pressable
       ref={ref}
       focusable={!disabled}
       hasTVPreferredFocus={hasTVPreferredFocus}
-      onFocus={handleFocus}
-      onBlur={handleBlur}
+      onFocus={externalOnFocus}
+      onBlur={externalOnBlur}
       disabled={disabled}
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={delayLongPress}
       style={({ pressed }) => {
-        const base =
-          typeof style === 'function' ? style({ pressed }) : style;
-
-        if (disabled) return base;
-
-        if (IS_TV && isFocused) {
-          return [
-            base,
-            {
-              borderWidth: 3,
-              borderColor: '#E50000',
-              shadowColor: '#E50000',
-              shadowOffset: { width: 0, height: 0 },
-              shadowOpacity: 1,
-              shadowRadius: 12,
-              elevation: 20,
-              transform: [{ scale: focusScale }],
-              zIndex: 10,
-            },
-            focusedStyle,
-          ];
-        }
-
-        if (pressed) return [base, { opacity: 0.75 }];
+        const base = typeof style === 'function' ? style({ pressed }) : style;
+        if (pressed && !disabled) return [base, { opacity: 0.75 }];
         return base;
       }}
       {...props}
