@@ -1,33 +1,67 @@
 /**
- * TVFocusable — GBTVON (v4)
+ * TVFocusable — GBTVON (v5 — Native Android)
  *
- * Pressable wrapper com foco visual para D-Pad.
+ * Em Android TV / TV Box:
+ *   Usa TVFocusableView (componente nativo Kotlin).
+ *   O Android é a ÚNICA fonte da verdade para foco.
+ *   onNativeFocus / onNativeBlur → isFocused → desenha borda + sombra + escala.
+ *   onNativePress → chama onPress original.
+ *   Nunca adivinhar foco por estado JS ou TVEventHandler.
  *
- * PRINCÍPIO: foco nativo Android TV é a fonte da verdade.
- * onFocus → destaque visual imediato no próprio elemento.
- * onBlur  → remove destaque.
- * Sem overlay separado. Zero conflito com indicador nativo.
+ * Em celular / tablet (IS_TV = false):
+ *   Pressable padrão, sem anel vermelho.
  *
- * Em celular/tablet (IS_TV = false): comportamento padrão de Pressable,
- * sem borda vermelha ou scale de TV.
+ * ⚠️  Qualquer Pressable INTERNO que não deve receber foco na TV
+ *     deve ter focusable={false} ou ser substituído por View.
  */
-import React, { useState, forwardRef } from 'react';
-import { Pressable, ViewStyle, PressableProps } from 'react-native';
+import React, { useState, useRef, forwardRef } from 'react';
+import {
+  Pressable,
+  View,
+  ViewStyle,
+  PressableProps,
+  Platform,
+  requireNativeComponent,
+  StyleSheet,
+} from 'react-native';
 import { IS_TV } from '@/hooks/useTV';
+
+// ── Native component (Android only) ─────────────────────────────────────────
+
+type NativeTVFocusableProps = {
+  focusable?: boolean;
+  disabled?: boolean;
+  hasTVPreferredFocus?: boolean;
+  onNativeFocus?: (e: any) => void;
+  onNativeBlur?: (e: any) => void;
+  onNativePress?: (e: any) => void;
+  style?: ViewStyle | ViewStyle[];
+  children?: React.ReactNode;
+};
+
+// Only require on Android — other platforms fall through to Pressable
+const NativeTVFocusableView =
+  Platform.OS === 'android'
+    ? requireNativeComponent<NativeTVFocusableProps>('TVFocusableView')
+    : null;
+
+// ── Public props ─────────────────────────────────────────────────────────────
 
 interface TVFocusableProps extends PressableProps {
   style?: ViewStyle | ViewStyle[] | ((state: { pressed: boolean }) => ViewStyle);
-  /** Estilo aplicado quando o item está focado (só em IS_TV=true) */
+  /** Estilo aplicado quando focado (só TV) */
   focusedStyle?: ViewStyle;
   children: React.ReactNode;
   hasTVPreferredFocus?: boolean;
-  /** Scale ao focar. Só aplicado em IS_TV. Default 1.04 */
+  /** Scale ao focar. Default 1.04 */
   focusScale?: number;
-  /** Ignorado — mantido para compatibilidade */
+  /** @deprecated — mantido para compatibilidade */
   showAccentBar?: boolean;
-  /** Ignorado — mantido para compatibilidade */
+  /** @deprecated — mantido para compatibilidade */
   overlayBorderRadius?: number;
 }
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 const TVFocusable = forwardRef<any, TVFocusableProps>(({
   style,
@@ -38,12 +72,63 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
   showAccentBar,
   overlayBorderRadius,
   disabled,
+  onPress,
   onFocus: externalOnFocus,
   onBlur: externalOnBlur,
+  onLongPress,
+  delayLongPress,
   ...props
 }, ref) => {
   const [isFocused, setIsFocused] = useState(false);
 
+  // ── Android TV: use native view ──────────────────────────────────────────
+  if (IS_TV && NativeTVFocusableView && Platform.OS === 'android') {
+    // Flatten base style (no function form in native props)
+    const baseStyle: ViewStyle | ViewStyle[] =
+      typeof style === 'function' ? (style({ pressed: false }) as ViewStyle) : (style ?? {});
+
+    const focusedOverride: ViewStyle = isFocused
+      ? {
+          borderWidth: 4,
+          borderColor: '#E50000',
+          shadowColor: '#E50000',
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: 1,
+          shadowRadius: 16,
+          elevation: 24,
+          transform: [{ scale: focusScale }],
+          zIndex: 20,
+          ...(focusedStyle ?? {}),
+        }
+      : {};
+
+    return (
+      <NativeTVFocusableView
+        focusable={!disabled}
+        disabled={!!disabled}
+        hasTVPreferredFocus={hasTVPreferredFocus}
+        style={[baseStyle, focusedOverride]}
+        onNativeFocus={(e) => {
+          setIsFocused(true);
+          externalOnFocus?.(e as any);
+        }}
+        onNativeBlur={(e) => {
+          setIsFocused(false);
+          externalOnBlur?.(e as any);
+        }}
+        onNativePress={() => {
+          if (!disabled) onPress?.({} as any);
+        }}
+      >
+        {/* Block inner views from stealing D-Pad focus */}
+        <View style={styles.innerBlock} pointerEvents="box-none">
+          {children}
+        </View>
+      </NativeTVFocusableView>
+    );
+  }
+
+  // ── Fallback: Pressable (mobile + non-Android TV) ────────────────────────
   const handleFocus = (e: any) => {
     setIsFocused(true);
     externalOnFocus?.(e);
@@ -62,13 +147,15 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
       onFocus={handleFocus}
       onBlur={handleBlur}
       disabled={disabled}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={delayLongPress}
       style={({ pressed }) => {
         const base =
           typeof style === 'function' ? style({ pressed }) : style;
 
         if (disabled) return base;
 
-        // TV: apply red focus ring driven by native onFocus/onBlur
         if (IS_TV && isFocused) {
           return [
             base,
@@ -87,11 +174,7 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
           ];
         }
 
-        // Mobile: only opacity feedback on press, no TV focus ring
-        if (pressed) {
-          return [base, { opacity: 0.75 }];
-        }
-
+        if (pressed) return [base, { opacity: 0.75 }];
         return base;
       }}
       {...props}
@@ -103,3 +186,9 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
 
 TVFocusable.displayName = 'TVFocusable';
 export default TVFocusable;
+
+const styles = StyleSheet.create({
+  innerBlock: {
+    flex: 1,
+  },
+});
