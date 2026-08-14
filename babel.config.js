@@ -5,5 +5,13 @@ module.exports = function (api) {
     plugins: [
       'react-native-reanimated/plugin',
     ],
+    overrides: [
+      {
+        // React Native internal files use Flow types.
+        // Strip them explicitly so the Hermes parser never sees raw Flow syntax.
+        test: /node_modules[\\/]react-native[\\/]/,
+        plugins: ['@babel/plugin-transform-flow-strip-types'],
+      },
+    ],
   };
-}
+};
