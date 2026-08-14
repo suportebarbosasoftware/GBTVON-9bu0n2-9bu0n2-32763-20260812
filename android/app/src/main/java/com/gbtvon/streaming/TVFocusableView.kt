@@ -19,19 +19,27 @@ import com.facebook.react.uimanager.events.RCTEventEmitter
  *   - onFocusChanged() is called by Android TV system synchronously
  *     when D-Pad moves focus — no JS roundtrip, no timeout.
  *   - hasVisualFocus flag is set immediately inside onFocusChanged().
- *   - invalidate() triggers onDraw() on the SAME frame.
- *   - onDraw(Canvas) paints the red border + star directly on Canvas.
+ *   - invalidate() schedules a redraw on the SAME frame.
+ *   - dispatchDraw(Canvas) paints the red border + star AFTER all
+ *     children are drawn, so the indicator is always on top.
  *
  * Why not StateListDrawable on foreground:
  *   Many TV Box ROMs (MediaTek / Amlogic / Rockchip) have a documented
  *   bug where foreground drawable state is NOT refreshed when focus
  *   changes on a FrameLayout that hosts React Native views. The system
  *   calls onFocusChanged correctly, but the foreground drawable update
- *   path is short-circuited. Drawing directly in onDraw bypasses this
- *   entire subsystem and is guaranteed to work on every device.
+ *   path is short-circuited. Drawing directly in dispatchDraw() bypasses
+ *   this entire subsystem and is guaranteed to work on every device.
  *
- * setWillNotDraw(false) is mandatory — ViewGroup defaults to
- * willNotDraw=true which skips onDraw entirely.
+ * Note: setWillNotDraw(false) is kept for safety but is NOT required
+ * for dispatchDraw() — ViewGroups always call dispatchDraw() regardless
+ * of the willNotDraw flag (which only gates onDraw()).
+ *
+ * descendantFocusability = FOCUS_BLOCK_DESCENDANTS:
+ *   Intentional. TVFocusableView is always the sole focusable element.
+ *   React Native child views are visual-only and must NOT intercept
+ *   D-Pad focus, otherwise onFocusChanged would fire on a child instead
+ *   of the container, and the visual indicator would not appear.
  */
 class TVFocusableView @JvmOverloads constructor(
     context: Context,
@@ -92,7 +100,8 @@ class TVFocusableView @JvmOverloads constructor(
         clipToPadding = false
         // Allow inner React views to receive touches, but not D-Pad focus
         descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-        // CRITICAL: ViewGroup skips onDraw by default — must opt-in
+        // setWillNotDraw(false) kept for safety; not required for dispatchDraw()
+        // (ViewGroups always call dispatchDraw regardless of this flag).
         setWillNotDraw(false)
     }
 
@@ -124,12 +133,13 @@ class TVFocusableView @JvmOverloads constructor(
 
     // ── Draw ─────────────────────────────────────────────────────────────────
     //
-    // dispatchDraw() is called AFTER all children have been drawn, which
-    // guarantees the red border + star are rendered on top of React Native
-    // content and are never hidden behind child views.
+    // dispatchDraw() is called by the Android View system AFTER
+    // super.dispatchDraw(canvas) has finished drawing all children.
+    // Drawing here guarantees the red border + star are always on top of
+    // every React Native child view, and are never occluded.
     //
-    // onDraw() runs BEFORE children — using it would cause the indicator
-    // to be covered by React Native's inner views on many devices.
+    // onDraw() was intentionally NOT used — it runs before children,
+    // which would cause the indicator to be hidden behind React Native views.
 
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
