@@ -3,20 +3,6 @@ const path = require('path');
 
 const config = getDefaultConfig(__dirname);
 
-// ── Ensure .js files inside react-native are transformed (not left raw) ──────
-//
-// Some Metro versions skip transformation for node_modules by default.
-// This forces the transformer to process react-native's own .js files so
-// Babel can strip Flow types before the Hermes parser sees them.
-//
-config.transformer = config.transformer || {};
-config.transformer.getTransformOptions = async () => ({
-  transform: {
-    experimentalImportSupport: false,
-    inlineRequires: true,
-  },
-});
-
 // ── Safe stub resolver for modules that crash on Android TV ─────────────────
 //
 // expo-modules-core accesses NativeModules.NativeUnimoduleProxy at module
