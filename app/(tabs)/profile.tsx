@@ -9,8 +9,6 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
-  findNodeHandle,
-  UIManager,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -25,162 +23,12 @@ import { getDeviceProfile } from '@/services/deviceService';
 import { getDeviceId } from '@/services/deviceIdService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
+import { useDevMode } from '@/contexts/DevModeContext';
 
 const device = getDeviceProfile();
 const isTV = IS_TV;
 const F = TV.fontSize;
 const SP = TV.spacing;
-
-// ── D-Pad Controller for focus testing ──────────────────────────────────────
-
-/**
- * Emulates a D-Pad hardware remote by dispatching simulated key events.
- * Each button press triggers dispatchCommand on the currently focused view,
- * which helps verify that the focus indicator moves correctly.
- */
-function DevDPad({ onClose }: { onClose: () => void }) {
-  const [lastDir, setLastDir] = useState<string | null>(null);
-  const feedbackAnim = useRef(new Animated.Value(1)).current;
-
-  function animateFeedback() {
-    feedbackAnim.setValue(0.88);
-    Animated.spring(feedbackAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 8 }).start();
-  }
-
-  function simulateKey(direction: 'up' | 'down' | 'left' | 'right' | 'select') {
-    setLastDir(direction);
-    animateFeedback();
-    // Dispatch native focus movement for TV devices
-    if (IS_TV) {
-      try {
-        const keyMap: Record<string, number> = {
-          up: 19,
-          down: 20,
-          left: 21,
-          right: 22,
-          select: 23,
-        };
-        const keyCode = keyMap[direction];
-        const { DeviceEventEmitter, NativeModules } = require('react-native');
-        // Use instrumentation to inject key event on Android TV
-        if (NativeModules.UIManager && NativeModules.UIManager.dispatchViewManagerCommand) {
-          // Fallback: use AccessibilityInfo to move focus
-        }
-        DeviceEventEmitter.emit('keyEvent', { keyCode, action: 'down' });
-      } catch {
-        // silently ignore — best effort
-      }
-    }
-  }
-
-  const iconColor = '#E50000';
-  const btnBase: any = {
-    width: 56,
-    height: 56,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(229,0,0,0.18)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(229,0,0,0.5)',
-  };
-  const btnCenter: any = {
-    ...btnBase,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(229,0,0,0.28)',
-  };
-
-  const dirLabels: Record<string, string> = {
-    up: '↑', down: '↓', left: '←', right: '→', select: 'OK',
-  };
-
-  return (
-    <View style={dpadStyles.container} pointerEvents="box-none">
-      {/* Backdrop */}
-      <View style={dpadStyles.backdrop} />
-
-      {/* Header */}
-      <View style={dpadStyles.header}>
-        <View style={dpadStyles.devBadge}>
-          <Ionicons name="bug-outline" size={12} color="#E50000" />
-          <Text style={dpadStyles.devBadgeText}> MODO DESENVOLVEDOR</Text>
-        </View>
-        <Pressable onPress={onClose} hitSlop={12} style={dpadStyles.closeBtn}>
-          <Ionicons name="close" size={16} color="rgba(255,255,255,0.6)" />
-        </Pressable>
-      </View>
-
-      <Text style={dpadStyles.title}>Teste de Foco Visual</Text>
-      <Text style={dpadStyles.subtitle}>
-        Use as setas para simular o controle remoto.{'\n'}
-        O indicador vermelho deve se mover entre os elementos.
-      </Text>
-
-      {/* D-Pad grid */}
-      <Animated.View style={[dpadStyles.dpad, { transform: [{ scale: feedbackAnim }] }]}>
-        {/* Up */}
-        <View style={dpadStyles.dpadRow}>
-          <Pressable style={btnBase} onPress={() => simulateKey('up')}>
-            <Ionicons name="chevron-up" size={26} color={iconColor} />
-          </Pressable>
-        </View>
-
-        {/* Middle row: Left + OK + Right */}
-        <View style={dpadStyles.dpadRowMid}>
-          <Pressable style={btnBase} onPress={() => simulateKey('left')}>
-            <Ionicons name="chevron-back" size={26} color={iconColor} />
-          </Pressable>
-          <Pressable style={btnCenter} onPress={() => simulateKey('select')}>
-            <Text style={dpadStyles.okText}>OK</Text>
-          </Pressable>
-          <Pressable style={btnBase} onPress={() => simulateKey('right')}>
-            <Ionicons name="chevron-forward" size={26} color={iconColor} />
-          </Pressable>
-        </View>
-
-        {/* Down */}
-        <View style={dpadStyles.dpadRow}>
-          <Pressable style={btnBase} onPress={() => simulateKey('down')}>
-            <Ionicons name="chevron-down" size={26} color={iconColor} />
-          </Pressable>
-        </View>
-      </Animated.View>
-
-      {/* Last pressed indicator */}
-      {lastDir && (
-        <View style={dpadStyles.lastDirRow}>
-          <Text style={dpadStyles.lastDirLabel}>Última tecla:</Text>
-          <View style={dpadStyles.lastDirBadge}>
-            <Text style={dpadStyles.lastDirText}>{dirLabels[lastDir]}</Text>
-          </View>
-        </View>
-      )}
-
-      {/* Focus test targets */}
-      <Text style={dpadStyles.focusTestLabel}>Elementos de teste (devem acender em vermelho quando focados):</Text>
-      <View style={dpadStyles.focusTargets}>
-        {['Alvo 1', 'Alvo 2', 'Alvo 3'].map((label) => (
-          <TVFocusable
-            key={label}
-            style={dpadStyles.focusTarget}
-            focusedStyle={{ borderColor: '#E50000', backgroundColor: 'rgba(229,0,0,0.25)' }}
-            onPress={() => Alert.alert('Pressionado', label)}
-          >
-            <Text style={dpadStyles.focusTargetText}>{label}</Text>
-          </TVFocusable>
-        ))}
-      </View>
-
-      <Text style={dpadStyles.hint}>
-        {IS_TV
-          ? 'No Android TV: use o controle físico — este painel confirma se o foco visual está sincronizado.'
-          : 'Este painel testa o componente TVFocusable em celular (foco por toque).'}
-      </Text>
-    </View>
-  );
-}
 
 // ── Main Profile Screen ──────────────────────────────────────────────────────
 
@@ -195,10 +43,8 @@ export default function ProfileScreen() {
   const [deviceMac, setDeviceMac] = useState(authMac || '');
   const [refreshing, setRefreshing] = useState(false);
 
-  // Developer mode
-  const [devMode, setDevMode] = useState(false);
-  const avatarTapCount = useRef(0);
-  const avatarTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Developer mode via shared context — overlay rendered globally in TabLayout
+  const { devMode, registerTap } = useDevMode();
   const devPulse = useRef(new Animated.Value(1)).current;
 
   // Hidden admin access: tap headset icon 7 times
@@ -251,23 +97,11 @@ export default function ProfileScreen() {
     }
   }
 
-  // 7 taps on avatar → developer mode
+  // 7 taps on avatar → developer mode (global via context, overlay in TabLayout)
   function handleAvatarTap() {
-    avatarTapCount.current += 1;
-    if (avatarTapTimer.current) clearTimeout(avatarTapTimer.current);
-    avatarTapTimer.current = setTimeout(() => { avatarTapCount.current = 0; }, 2500);
-
-    const remaining = 7 - avatarTapCount.current;
-    if (avatarTapCount.current >= 7) {
-      avatarTapCount.current = 0;
-      if (!devMode) {
-        setDevMode(true);
-        Alert.alert('🛠 Modo Desenvolvedor', 'Painel de teste de foco visual ativado!');
-      } else {
-        setDevMode(false);
-      }
-    } else if (remaining <= 3 && remaining > 0) {
-      // Silent visual hint: no alert, just count
+    const remaining = registerTap();
+    if (remaining === 0 && !devMode) {
+      Alert.alert('Modo Desenvolvedor', 'Painel D-Pad ativado — disponível em todas as abas!');
     }
   }
 
@@ -426,7 +260,7 @@ export default function ProfileScreen() {
               </Text>
             ) : null}
             {devMode && (
-              <Text style={styles.devTapHint}>Toque na foto novamente 7x para desativar</Text>
+              <Text style={styles.devTapHint}>Toque na foto 7x para desativar · painel visível em todas as abas</Text>
             )}
           </View>
         </View>
@@ -563,13 +397,7 @@ export default function ProfileScreen() {
           <Text style={[styles.versionText, isTV && { fontSize: F.xs }]}>GBTVON • v1.0.0 • Mais que TV, Uma Experiência!</Text>
         </View>
       </ScrollView>
-
-      {/* Developer Mode D-Pad overlay */}
-      {devMode && (
-        <View style={styles.devOverlay} pointerEvents="box-none">
-          <DevDPad onClose={() => setDevMode(false)} />
-        </View>
-      )}
+      {/* DevDPad overlay is rendered globally in app/(tabs)/_layout.tsx */}
     </View>
   );
 }
@@ -748,91 +576,4 @@ const styles = StyleSheet.create({
   versionText: { color: Colors.textMuted, fontSize: 11, textAlign: 'center' },
   expiryBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
   expiryBadgeText: { fontSize: 11, fontWeight: '700' },
-
-  // Developer overlay
-  devOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    left: 0,
-    zIndex: 999,
-  },
-});
-
-// ── D-Pad styles ──────────────────────────────────────────────────────────────
-
-const dpadStyles = StyleSheet.create({
-  container: {
-    backgroundColor: '#0e0e0e',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(229,0,0,0.35)',
-    paddingTop: 12,
-    paddingBottom: 20,
-    paddingHorizontal: 20,
-  },
-  backdrop: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  devBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(229,0,0,0.12)',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderWidth: 1,
-    borderColor: 'rgba(229,0,0,0.4)',
-    flex: 1,
-  },
-  devBadgeText: { color: '#E50000', fontSize: 10, fontWeight: '900', letterSpacing: 1.5 },
-  closeBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: { color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 4 },
-  subtitle: { color: 'rgba(255,255,255,0.5)', fontSize: 11, lineHeight: 16, marginBottom: 14 },
-
-  dpad: { alignItems: 'center', marginBottom: 14 },
-  dpadRow: { alignItems: 'center', marginVertical: 4 },
-  dpadRowMid: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  okText: { color: '#E50000', fontSize: 16, fontWeight: '900' },
-
-  lastDirRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
-  lastDirLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
-  lastDirBadge: {
-    backgroundColor: 'rgba(229,0,0,0.2)',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(229,0,0,0.5)',
-  },
-  lastDirText: { color: '#E50000', fontSize: 16, fontWeight: '900' },
-
-  focusTestLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 10, marginBottom: 8, fontWeight: '600', letterSpacing: 0.4 },
-  focusTargets: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  focusTarget: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  focusTargetText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700' },
-
-  hint: { color: 'rgba(255,255,255,0.3)', fontSize: 10, textAlign: 'center', lineHeight: 15, fontStyle: 'italic' },
 });

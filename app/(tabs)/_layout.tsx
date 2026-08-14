@@ -2,16 +2,20 @@
  * GBTVON — Main Layout
  * Side navigation (vertical, right panel) for landscape mode.
  * Works on phones, TV Box, Android TV, Fire TV.
+ *
+ * DevDPad overlay is rendered here so it's available across ALL tabs.
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, Platform, BackHandler } from 'react-native';
 import TVFocusable from '@/components/ui/TVFocusable';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import DevDPad from '@/components/ui/DevDPad';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { IS_TV, TV } from '@/hooks/useTV';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'expo-router';
+import { useDevMode } from '@/contexts/DevModeContext';
 import NotificationBanner from '@/components/ui/NotificationBanner';
 import LiveTVScreen from './index';
 import MoviesScreen from './movies';
@@ -90,18 +94,17 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabId>('live');
   const { isAuthenticated, activationStatus, blockReasonDetail, devicePrice } = useAuth();
+  const { devMode } = useDevMode();
   const router = useRouter();
   const lastStatusRef = useRef(activationStatus);
 
   // Android TV back button — navigate tabs or exit app
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      // If not on live tab, go back to live
       if (activeTab !== 'live') {
         setActiveTab('live');
         return true;
       }
-      // On live tab: let Android handle (minimize/exit)
       return false;
     });
     return () => sub.remove();
@@ -115,13 +118,13 @@ export default function TabLayout() {
       prev === 'activated' &&
       (activationStatus === 'blocked_manual' || activationStatus === 'expired')
     ) {
-      router.replace({ 
-        pathname: '/blocked', 
-        params: { 
+      router.replace({
+        pathname: '/blocked',
+        params: {
           reason: activationStatus,
           blockDetail: blockReasonDetail || '',
           price: devicePrice ? String(devicePrice) : '',
-        } 
+        },
       } as any);
     }
     if (!isAuthenticated && prev === 'activated') {
@@ -156,7 +159,6 @@ export default function TabLayout() {
           </View>
         </View>
 
-        {/* Spacer */}
         <View style={{ flex: 1 }} />
 
         {/* Nav items */}
@@ -175,7 +177,6 @@ export default function TabLayout() {
           })}
         </View>
 
-        {/* Spacer */}
         <View style={{ flex: 1 }} />
 
         {/* Bottom live indicator */}
@@ -184,6 +185,13 @@ export default function TabLayout() {
           <Text style={styles.liveLabel}>LIVE</Text>
         </View>
       </View>
+
+      {/* ── Developer D-Pad Overlay — visible across ALL tabs ────── */}
+      {devMode && (
+        <View style={styles.devOverlay} pointerEvents="box-none">
+          <DevDPad />
+        </View>
+      )}
     </View>
   );
 }
@@ -282,5 +290,13 @@ const styles = StyleSheet.create({
     fontSize: 8,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  devOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 9999,
+    elevation: 99,
   },
 });
