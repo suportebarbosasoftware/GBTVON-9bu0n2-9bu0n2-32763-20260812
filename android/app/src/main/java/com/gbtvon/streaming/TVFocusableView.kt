@@ -1,36 +1,34 @@
 package com.gbtvon.streaming
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.StateListDrawable
 import android.util.AttributeSet
 import android.view.KeyEvent
 import android.widget.FrameLayout
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.uimanager.events.RCTEventEmitter
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * TVFocusableView — Native Android focusable container for GBTVON
  *
- * Draws the red focus border + star NATIVELY inside onFocusChanged.
- * No JS roundtrip needed for the visual. The Android focus system is the
- * sole source of truth. JS receives events only for application logic
- * (tab switching, etc.) — never for visual rendering.
+ * Uses StateListDrawable as foreground to show the red focus border.
+ * This is the standard Android TV mechanism: the OS itself switches
+ * states when focus enters/leaves — zero JS roundtrip, zero Canvas
+ * custom drawing, zero invalidate() calls. It just works on every
+ * Android TV, TV Box, Fire TV, and Google TV device.
+ *
+ * The foreground drawable is drawn ON TOP of all child views by the
+ * Android framework automatically. No overriding draw() needed.
  */
 class TVFocusableView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr) {
-
-    // ── State ────────────────────────────────────────────────────────────────
-
-    private var isFocusedState: Boolean = false
 
     var isViewFocusable: Boolean = true
         set(value) {
@@ -48,43 +46,54 @@ class TVFocusableView @JvmOverloads constructor(
             isClickable = !value
         }
 
-    // ── Paints (allocated once, reused) ─────────────────────────────────────
-
-    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E50000")
-        style = Paint.Style.STROKE
-        strokeWidth = 5f
-    }
-
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(55, 229, 0, 0)
-        style = Paint.Style.STROKE
-        strokeWidth = 14f
-    }
-
-    private val starFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E50000")
-        style = Paint.Style.FILL
-    }
-
-    private val starBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(200, 18, 18, 18)
-        style = Paint.Style.FILL
-    }
-
-    // ── Init ─────────────────────────────────────────────────────────────────
-
     init {
         isFocusable = true
         isFocusableInTouchMode = true
         isClickable = true
         clipChildren = false
         clipToPadding = false
+        // Block inner Pressable/View from stealing focus
         descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-        setWillNotDraw(false) // Required: FrameLayout skips onDraw by default
+
+        // ── Build the focus foreground using StateListDrawable ──────────────
+        //
+        // Focused state: two-layer drawable
+        //   Layer 0 — wide semi-transparent red stroke (glow)
+        //   Layer 1 — sharp red stroke (border)
+        //
+        // Normal state: fully transparent (invisible)
+
+        val cornerRadius = 18f
+
+        // Glow ring (wider, low alpha)
+        val glowDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            this.cornerRadius = cornerRadius + 4f
+            setStroke(28, Color.argb(60, 229, 0, 0))
+            setColor(Color.TRANSPARENT)
+        }
+
+        // Sharp red border
+        val borderDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            this.cornerRadius = cornerRadius
+            setStroke(5, Color.parseColor("#E50000"))
+            setColor(Color.TRANSPARENT)
+        }
+
+        val focusedLayer = LayerDrawable(arrayOf(glowDrawable, borderDrawable))
+
+        val stateList = StateListDrawable()
+        // focused state must be added BEFORE the default empty state
+        stateList.addState(intArrayOf(android.R.attr.state_focused), focusedLayer)
+        stateList.addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+
+        // foreground is drawn by the framework ABOVE all children — no draw() override needed
+        foreground = stateList
     }
 
-    // ── Focus ────────────────────────────────────────────────────────────────
+    // ── Focus: notify JS for application logic only ──────────────────────────
+    // The visual is already handled by the StateListDrawable above.
 
     override fun onFocusChanged(
         gainFocus: Boolean,
@@ -93,70 +102,11 @@ class TVFocusableView @JvmOverloads constructor(
     ) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
 
-        // Update visual IMMEDIATELY — no JS roundtrip
-        isFocusedState = gainFocus
-        invalidate()
-
-        // Notify JS for application logic only (tab switching, etc.)
         val reactContext = context as? ReactContext ?: return
         val event = if (gainFocus) "topNativeFocus" else "topNativeBlur"
         reactContext
             .getJSModule(RCTEventEmitter::class.java)
             ?.receiveEvent(id, event, null)
-    }
-
-    // ── Drawing ──────────────────────────────────────────────────────────────
-
-    override fun draw(canvas: Canvas) {
-        super.draw(canvas)
-        if (isFocusedState) {
-            drawFocusBorder(canvas)
-            drawFocusStar(canvas)
-        }
-    }
-
-    /**
-     * Draws a red rounded border + soft outer glow around the view.
-     */
-    private fun drawFocusBorder(canvas: Canvas) {
-        val r = 20f
-        val inset = borderPaint.strokeWidth / 2f
-        val rect = RectF(inset, inset, width - inset, height - inset)
-
-        // Outer glow (wider, semi-transparent)
-        val glowInset = glowPaint.strokeWidth / 2f
-        val glowRect = RectF(glowInset, glowInset, width - glowInset, height - glowInset)
-        canvas.drawRoundRect(glowRect, r + 4f, r + 4f, glowPaint)
-
-        // Sharp red border
-        canvas.drawRoundRect(rect, r, r, borderPaint)
-    }
-
-    /**
-     * Draws a small ★ in the top-right corner, on top of everything.
-     * The star is pinned outside the top-right corner radius.
-     */
-    private fun drawFocusStar(canvas: Canvas) {
-        val starRadius = 14f       // outer radius of star
-        val innerRadius = 6f       // inner radius of star
-        val points = 5
-        val cx = width - 18f       // center X (near top-right corner)
-        val cy = 18f               // center Y
-
-        // Background circle so star is readable on any content
-        canvas.drawCircle(cx, cy, starRadius + 3f, starBgPaint)
-
-        // Star path
-        val path = Path()
-        for (i in 0 until points * 2) {
-            val angle = (Math.PI / points * i - Math.PI / 2).toFloat()
-            val r = if (i % 2 == 0) starRadius else innerRadius
-            val x = cx + r * cos(angle)
-            val y = cy + r * sin(angle)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-        canvas.drawPath(path, starFillPaint)
     }
 
     // ── Click ────────────────────────────────────────────────────────────────
