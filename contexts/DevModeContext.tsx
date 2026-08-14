@@ -7,10 +7,8 @@ import React, { createContext, useContext, useState, useRef, useCallback } from 
 
 interface DevModeContextType {
   devMode: boolean;
-  enableDevMode: () => void;
-  disableDevMode: () => void;
   toggleDevMode: () => void;
-  /** Registra um toque na sequência de ativação. Retorna o número de toques restantes. */
+  /** Registra um toque na sequência de ativação. Retorna taps restantes (0 = ativado/desativado). */
   registerTap: () => number;
 }
 
@@ -21,14 +19,14 @@ export function DevModeProvider({ children }: { children: React.ReactNode }) {
   const tapCount = useRef(0);
   const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const enableDevMode = useCallback(() => setDevMode(true), []);
-  const disableDevMode = useCallback(() => setDevMode(false), []);
   const toggleDevMode = useCallback(() => setDevMode(v => !v), []);
 
   const registerTap = useCallback((): number => {
     tapCount.current += 1;
     if (tapTimer.current) clearTimeout(tapTimer.current);
-    tapTimer.current = setTimeout(() => { tapCount.current = 0; }, 2500);
+    tapTimer.current = setTimeout(() => {
+      tapCount.current = 0;
+    }, 2500);
 
     if (tapCount.current >= 7) {
       tapCount.current = 0;
@@ -39,7 +37,7 @@ export function DevModeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <DevModeContext.Provider value={{ devMode, enableDevMode, disableDevMode, toggleDevMode, registerTap }}>
+    <DevModeContext.Provider value={{ devMode, toggleDevMode, registerTap }}>
       {children}
     </DevModeContext.Provider>
   );

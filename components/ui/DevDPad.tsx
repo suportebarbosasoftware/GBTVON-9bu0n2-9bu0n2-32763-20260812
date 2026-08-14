@@ -22,28 +22,21 @@ import { IS_TV } from '@/hooks/useTV';
 import { useDevMode } from '@/contexts/DevModeContext';
 
 // ── Focus Test Target ────────────────────────────────────────────────────────
-// Mostra feedback visual tanto no foco nativo (TV) quanto no toque (celular).
 
-function FocusTarget({ label, hasTVPreferredFocus = false }: { label: string; hasTVPreferredFocus?: boolean }) {
-  const [focused, setFocused] = useState(false);
-  const [pressed, setPressed] = useState(false);
-
-  const active = focused || pressed;
+function FocusTarget({ label, hasTVPreferredFocus }: { label: string; hasTVPreferredFocus?: boolean }) {
+  const [active, setActive] = useState(false);
 
   return (
     <TVFocusable
-      style={[
-        styles.focusTarget,
-        active && styles.focusTargetActive,
-      ]}
+      style={[styles.focusTarget, active && styles.focusTargetActive]}
       focusedStyle={{ borderColor: '#E50000', backgroundColor: 'rgba(229,0,0,0.25)' }}
       hasTVPreferredFocus={hasTVPreferredFocus}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
+      onFocus={() => setActive(true)}
+      onBlur={() => setActive(false)}
       onPress={() => {
-        setPressed(true);
-        setTimeout(() => setPressed(false), 300);
-        Alert.alert('Foco OK', `${label} respondeu ao foco!`);
+        setActive(true);
+        setTimeout(() => setActive(false), 300);
+        Alert.alert('Foco OK', label + ' respondeu!');
       }}
     >
       <Ionicons
@@ -51,7 +44,7 @@ function FocusTarget({ label, hasTVPreferredFocus = false }: { label: string; ha
         size={14}
         color={active ? '#E50000' : 'rgba(255,255,255,0.4)'}
       />
-      <Text style={[styles.focusTargetText, active && { color: '#E50000', fontWeight: '900' }]}>
+      <Text style={[styles.focusTargetText, active && styles.focusTargetTextActive]}>
         {label}
       </Text>
     </TVFocusable>
@@ -61,13 +54,14 @@ function FocusTarget({ label, hasTVPreferredFocus = false }: { label: string; ha
 // ── Main D-Pad Component ─────────────────────────────────────────────────────
 
 export default function DevDPad() {
-  const { disableDevMode } = useDevMode();
-  const [lastDir, setLastDir] = useState<string | null>(null);
-  const feedbackAnim = useRef(new Animated.Value(1)).current;
+  const { toggleDevMode } = useDevMode();
+  const [lastDir, setLastDir] = useState('');
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  function animateFeedback() {
-    feedbackAnim.setValue(0.88);
-    Animated.spring(feedbackAnim, {
+  function pressDir(dir: string) {
+    setLastDir(dir);
+    scaleAnim.setValue(0.9);
+    Animated.spring(scaleAnim, {
       toValue: 1,
       useNativeDriver: true,
       speed: 30,
@@ -75,46 +69,41 @@ export default function DevDPad() {
     }).start();
   }
 
-  function pressDir(direction: string) {
-    setLastDir(direction);
-    animateFeedback();
-  }
-
-  const iconColor = '#E50000';
-  const btnBase: any = {
+  const btnStyle: object = {
     width: 52,
     height: 52,
     borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     backgroundColor: 'rgba(229,0,0,0.18)',
     borderWidth: 1.5,
     borderColor: 'rgba(229,0,0,0.5)',
   };
-  const btnCenter: any = {
-    ...btnBase,
+
+  const centerStyle: object = {
     width: 60,
     height: 60,
     borderRadius: 30,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     backgroundColor: 'rgba(229,0,0,0.28)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(229,0,0,0.5)',
   };
 
-  const dirLabels: Record<string, string> = {
-    up: '↑', down: '↓', left: '←', right: '→', ok: 'OK',
+  const LABELS: Record<string, string> = {
+    up: '\u2191', down: '\u2193', left: '\u2190', right: '\u2192', ok: 'OK',
   };
 
   return (
     <View style={styles.container}>
-      {/* Backdrop */}
       <View style={styles.backdrop} />
 
       {/* Header */}
       <View style={styles.header}>
-        <View style={styles.devBadge}>
-          <Ionicons name="bug-outline" size={11} color="#E50000" />
-          <Text style={styles.devBadgeText}> MODO DESENVOLVEDOR — TESTE DE FOCO</Text>
-        </View>
-        <Pressable onPress={disableDevMode} hitSlop={14} style={styles.closeBtn}>
+        <Ionicons name="bug-outline" size={11} color="#E50000" />
+        <Text style={styles.headerText}> MODO DESENVOLVEDOR — TESTE DE FOCO</Text>
+        <Pressable onPress={toggleDevMode} hitSlop={14} style={styles.closeBtn}>
           <Ionicons name="close" size={16} color="rgba(255,255,255,0.7)" />
         </Pressable>
       </View>
@@ -123,38 +112,36 @@ export default function DevDPad() {
         {/* D-Pad */}
         <View style={styles.dpadSection}>
           <Text style={styles.sectionLabel}>
-            {IS_TV ? 'Use o controle físico ↑↓←→' : 'Simule teclas do controle'}
+            {IS_TV ? 'Use o controle fisico' : 'Simule o controle'}
           </Text>
-
-          <Animated.View style={[styles.dpad, { transform: [{ scale: feedbackAnim }] }]}>
+          <Animated.View style={[styles.dpad, { transform: [{ scale: scaleAnim }] }]}>
             <View style={styles.dpadRow}>
-              <Pressable style={btnBase} onPress={() => pressDir('up')}>
-                <Ionicons name="chevron-up" size={24} color={iconColor} />
+              <Pressable style={btnStyle} onPress={() => pressDir('up')}>
+                <Ionicons name="chevron-up" size={22} color="#E50000" />
               </Pressable>
             </View>
-            <View style={styles.dpadRowMid}>
-              <Pressable style={btnBase} onPress={() => pressDir('left')}>
-                <Ionicons name="chevron-back" size={24} color={iconColor} />
+            <View style={styles.dpadMid}>
+              <Pressable style={btnStyle} onPress={() => pressDir('left')}>
+                <Ionicons name="chevron-back" size={22} color="#E50000" />
               </Pressable>
-              <Pressable style={btnCenter} onPress={() => pressDir('ok')}>
+              <Pressable style={centerStyle} onPress={() => pressDir('ok')}>
                 <Text style={styles.okText}>OK</Text>
               </Pressable>
-              <Pressable style={btnBase} onPress={() => pressDir('right')}>
-                <Ionicons name="chevron-forward" size={24} color={iconColor} />
+              <Pressable style={btnStyle} onPress={() => pressDir('right')}>
+                <Ionicons name="chevron-forward" size={22} color="#E50000" />
               </Pressable>
             </View>
             <View style={styles.dpadRow}>
-              <Pressable style={btnBase} onPress={() => pressDir('down')}>
-                <Ionicons name="chevron-down" size={24} color={iconColor} />
+              <Pressable style={btnStyle} onPress={() => pressDir('down')}>
+                <Ionicons name="chevron-down" size={22} color="#E50000" />
               </Pressable>
             </View>
           </Animated.View>
-
           {lastDir ? (
-            <View style={styles.lastDirRow}>
-              <Text style={styles.lastDirLabel}>Última tecla:</Text>
-              <View style={styles.lastDirBadge}>
-                <Text style={styles.lastDirText}>{dirLabels[lastDir] ?? lastDir}</Text>
+            <View style={styles.lastRow}>
+              <Text style={styles.lastLabel}>Ultima:</Text>
+              <View style={styles.lastBadge}>
+                <Text style={styles.lastText}>{LABELS[lastDir] || lastDir}</Text>
               </View>
             </View>
           ) : null}
@@ -163,28 +150,23 @@ export default function DevDPad() {
         {/* Focus targets */}
         <View style={styles.targetsSection}>
           <Text style={styles.sectionLabel}>
-            {IS_TV
-              ? 'Navegue com D-Pad → deve acender em vermelho'
-              : 'Toque → deve acender em vermelho'}
+            {IS_TV ? 'Navegue com D-Pad -> vermelho' : 'Toque -> deve acender vermelho'}
           </Text>
-          <View style={styles.focusTargets}>
+          <View style={styles.targets}>
             <FocusTarget label="Alvo 1" hasTVPreferredFocus />
             <FocusTarget label="Alvo 2" />
             <FocusTarget label="Alvo 3" />
           </View>
-
           <Text style={styles.hint}>
             {IS_TV
-              ? 'Se o indicador vermelho não se mover com o controle, o foco nativo não está chegando ao componente.'
-              : 'No celular o foco é por toque — pressione cada alvo para ver o indicador vermelho.'}
+              ? 'Se o indicador nao se mover com o controle, o foco nativo nao esta chegando ao componente.'
+              : 'No celular o foco e por toque. Pressione cada alvo.'}
           </Text>
         </View>
       </View>
     </View>
   );
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: {
@@ -195,10 +177,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: 'rgba(10,0,0,0.96)',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
   },
   header: {
     flexDirection: 'row',
@@ -209,16 +193,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(229,0,0,0.15)',
   },
-  devBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  devBadgeText: {
+  headerText: {
     color: '#E50000',
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 1,
+    flex: 1,
   },
   closeBtn: {
     width: 28,
@@ -258,7 +238,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: 2,
   },
-  dpadRowMid: {
+  dpadMid: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
@@ -268,17 +248,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900',
   },
-  lastDirRow: {
+  lastRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     marginTop: 4,
   },
-  lastDirLabel: {
+  lastLabel: {
     color: 'rgba(255,255,255,0.35)',
     fontSize: 10,
   },
-  lastDirBadge: {
+  lastBadge: {
     backgroundColor: 'rgba(229,0,0,0.2)',
     borderRadius: 6,
     paddingHorizontal: 9,
@@ -286,12 +266,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(229,0,0,0.5)',
   },
-  lastDirText: {
+  lastText: {
     color: '#E50000',
     fontSize: 15,
     fontWeight: '900',
   },
-  focusTargets: {
+  targets: {
     flexDirection: 'row',
     gap: 8,
     flexWrap: 'wrap',
@@ -317,6 +297,10 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.65)',
     fontSize: 12,
     fontWeight: '700',
+  },
+  focusTargetTextActive: {
+    color: '#E50000',
+    fontWeight: '900',
   },
   hint: {
     color: 'rgba(255,255,255,0.28)',
