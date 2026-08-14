@@ -124,12 +124,15 @@ class TVFocusableView @JvmOverloads constructor(
 
     // ── Draw ─────────────────────────────────────────────────────────────────
     //
-    // Called on every invalidate(). When hasVisualFocus is false this is a
-    // no-op (just calls super). When true, draws the red border + star on top
-    // of all children, inside the view bounds.
+    // dispatchDraw() is called AFTER all children have been drawn, which
+    // guarantees the red border + star are rendered on top of React Native
+    // content and are never hidden behind child views.
+    //
+    // onDraw() runs BEFORE children — using it would cause the indicator
+    // to be covered by React Native's inner views on many devices.
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
 
         if (!hasVisualFocus) return
 
@@ -149,7 +152,8 @@ class TVFocusableView @JvmOverloads constructor(
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
 
         // ── 8-point star in the top-right corner ─────────────────────────
-        drawStar(canvas, w, 0f, 14f, 6f)
+        // Offset inward so the star stays fully within the view bounds.
+        drawStar(canvas, w - 14f, 14f, 14f, 6f)
     }
 
     /**
