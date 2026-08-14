@@ -97,7 +97,12 @@ const TVFocusable = forwardRef<any, TVFocusableProps>(({
         onNativeBlur={(e) => externalOnBlur?.(e as any)}
         onNativePress={() => { if (!disabled) onPress?.({} as any); }}
       >
-        {/* Prevent inner views from stealing D-Pad focus */}
+        {/*
+          IMPORTANT: overflow:visible ensures the Canvas drawing in
+          TVFocusableView.onDraw (red border + star) is NOT clipped by
+          the child View bounds. The native border is drawn by the Kotlin
+          layer — this inner View must not clip or cover it.
+        */}
         <View style={styles.innerBlock} pointerEvents="box-none">
           {children}
         </View>
@@ -135,5 +140,8 @@ export default TVFocusable;
 const styles = StyleSheet.create({
   innerBlock: {
     flex: 1,
+    // overflow:visible so the native Canvas border drawn by TVFocusableView
+    // is not clipped by this child View's bounds.
+    overflow: 'visible',
   },
 });
