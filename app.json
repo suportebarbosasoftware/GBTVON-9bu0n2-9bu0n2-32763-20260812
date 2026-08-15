@@ -3,7 +3,7 @@
     "name": "GBTVON",
     "slug": "gbtvon",
     "version": "1.0.0",
-    "orientation": "default",
+    "orientation": "landscape",
     "icon": "./assets/images/icon.png",
     "splash": {
       "image": "./assets/images/splash.png",
@@ -20,7 +20,6 @@
     "android": {
       "package": "com.gbtvon.streaming",
       "versionCode": 1,
-      "isTV": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000000"
