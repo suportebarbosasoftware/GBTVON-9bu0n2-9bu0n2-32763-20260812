@@ -91,12 +91,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  /** Silent background check — updates state without showing loading */
+  /** Silent background check — updates state without showing loading.
+   * Only applies result if it's a definitive state (activated/blocked/expired).
+   * Never revokes an active session due to network errors or timeouts.
+   */
   async function silentRefresh() {
     const email = userEmailRef.current;
     if (!email) return;
     try {
       const result = await checkActivation(email);
+      // Only apply if server gave a definitive answer — ignore errors/timeouts
+      if (result.status === 'error') return;
       applyActivationResult(result, true);
       await storeActivation(result);
     } catch {}
@@ -133,13 +138,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function silentRefreshWithEmail(email: string) {
     try {
-      // 10-second timeout so it never hangs indefinitely
+      // 15-second timeout so it never hangs indefinitely
       const result = await Promise.race([
         checkActivation(email),
         new Promise<ActivationResult>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 10000)
+          setTimeout(() => reject(new Error('timeout')), 15000)
         ),
       ]) as ActivationResult;
+      // Only apply definitive results — never revoke active session on error/timeout
+      if (result.status === 'error') return;
       applyActivationResult(result, true);
       await storeActivation(result);
     } catch {}
@@ -168,8 +175,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsAuthenticated(true);
       isAuthenticatedRef.current = true;
       startPolling();
-    } else {
-      // Blocked or expired — revoke access immediately
+    } else if (result.status === 'blocked_manual' || result.status === 'expired') {
+      // Only these definitive statuses revoke access
       setAuth(null);
       setPlanName(null);
       setExpiresAt(null);
@@ -177,6 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticatedRef.current = false;
       stopPolling();
     }
+    // 'pending' and 'error' do NOT revoke an existing active session
   }
 
   async function login(nameOrEmail: string, repCode?: string): Promise<{ success: boolean; status: string; error?: string; message?: string }> {
