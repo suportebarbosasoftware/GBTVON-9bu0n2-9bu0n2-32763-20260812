@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
   repLogin, getRepDevices, getRepSources, activateRepDevice, activateRepTest,
-  deactivateRepDevice, blockRepDevice, deleteRepDevice, renewRepDevice,
+  deactivateRepDevice, blockRepDevice, unblockRepDevice, deleteRepDevice, renewRepDevice,
   lookupDeviceByMac,
   Representative, Source, RepDevice,
 } from '@/services/repApiService';
@@ -233,9 +233,9 @@ export default function RepPanelScreen() {
     }
     const daysNum = parseInt(days);
     if (isNaN(daysNum) || daysNum < 1) { Alert.alert('Atenção', 'Dias inválidos'); return; }
-    const creditsNeeded = Math.ceil(daysNum / 30);
-    if ((rep?.credits ?? 0) < creditsNeeded) {
-      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta operação requer ${creditsNeeded}.`);
+    const creditCost = Math.round((daysNum / 30) * 100) / 100;
+    if ((rep?.credits ?? 0) < creditCost) {
+      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta ativação custa ${creditCost.toFixed(2)}.`);
       return;
     }
 
@@ -258,7 +258,7 @@ export default function RepPanelScreen() {
         days: daysNum,
         expiresAtDate,
       });
-      setRep(prev => prev ? { ...prev, credits: prev.credits - creditsNeeded } : prev);
+      setRep(prev => prev ? { ...prev, credits: Math.round((prev.credits - creditCost) * 100) / 100 } : prev);
       setAddForm({ mac: '', clientName: '', sourceId: '', packageType: 'iptv', expiresDateStr: '', days: '30' });
       await loadData(false);
       Alert.alert('Ativado!', `MAC ${mac.trim().toUpperCase()} ativado com sucesso.`);
@@ -340,21 +340,32 @@ export default function RepPanelScreen() {
     if (!selectedDevice) return;
     const daysNum = parseInt(renewDays);
     if (isNaN(daysNum) || daysNum < 1) { Alert.alert('Dias inválidos'); return; }
-    const creditsNeeded = Math.ceil(daysNum / 30);
-    if ((rep?.credits ?? 0) < creditsNeeded) {
-      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta renovação requer ${creditsNeeded}.`);
+    const creditCost = Math.round((daysNum / 30) * 100) / 100;
+    if ((rep?.credits ?? 0) < creditCost) {
+      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta renovação custa ${creditCost.toFixed(2)}.`);
       return;
     }
     setRenewLoading(true);
     try {
-      await renewRepDevice(selectedDevice.id, daysNum);
-      setRep(prev => prev ? { ...prev, credits: prev.credits - creditsNeeded } : prev);
+      const result = await renewRepDevice(selectedDevice.id, daysNum);
+      setRep(prev => prev ? { ...prev, credits: Math.round((prev.credits - (result.credit_cost || creditCost)) * 100) / 100 } : prev);
       setRenewModal(false);
       setDetailModal(false);
       await loadData(false);
       Alert.alert('Renovado!', `MAC renovado por mais ${daysNum} dias.`);
     } catch (e: any) { Alert.alert('Erro', e.message); }
     setRenewLoading(false);
+  }
+
+  async function handleUnblock() {
+    if (!selectedDevice) return;
+    setActionLoading(true);
+    try {
+      await unblockRepDevice(selectedDevice.id);
+      setDetailModal(false);
+      await loadData(false);
+    } catch (e: any) { Alert.alert('Erro', e.message); }
+    setActionLoading(false);
   }
 
   // ── Computed ───────────────────────────────────────────────────────────────
@@ -799,11 +810,11 @@ export default function RepPanelScreen() {
                 </View>
               </View>
 
-              {addForm.days ? (
+              {addForm.days && parseInt(addForm.days) > 0 ? (
                 <View style={styles.creditsCostRow}>
                   <Ionicons name="wallet-outline" size={14} color="#FFD700" />
                   <Text style={styles.creditsCostText}>
-                    Custo: {Math.ceil(parseInt(addForm.days || '0') / 30)} crédito(s) para {addForm.days} dias
+                    Custo: {(Math.round((parseInt(addForm.days) / 30) * 100) / 100).toFixed(2)} cr. para {addForm.days} dias
                   </Text>
                 </View>
               ) : null}
@@ -983,6 +994,14 @@ export default function RepPanelScreen() {
                       </View>
                     ))}
 
+                    {/* Current content — what the client is watching */}
+                    {selectedDevice.current_content ? (
+                      <View style={[styles.onlineBannerRow, { backgroundColor: 'rgba(156,39,176,0.08)', borderColor: 'rgba(156,39,176,0.25)' }]}>
+                        <Ionicons name="play-circle-outline" size={14} color="#9C27B0" />
+                        <Text style={[styles.onlineBannerText, { color: '#CE93D8' }]} numberOfLines={2}>Assistindo: {selectedDevice.current_content}</Text>
+                      </View>
+                    ) : null}
+
                     {/* MAC row with copy button */}
                     <Pressable
                       style={styles.detailRow}
@@ -1036,16 +1055,34 @@ export default function RepPanelScreen() {
                       </View>
                     </Pressable>
 
+                    {/* Current content (what client is watching) */}
+                    {selectedDevice.current_content ? (
+                      <View style={[styles.clientNameBanner, { backgroundColor: 'rgba(156,39,176,0.08)', borderColor: 'rgba(156,39,176,0.25)', marginTop: 4 }]}>
+                        <Ionicons name="play-circle-outline" size={16} color="#9C27B0" />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: Colors.textMuted, fontSize: 10, fontWeight: '600' }}>ASSISTINDO AGORA</Text>
+                          <Text style={[styles.clientNameBannerText, { color: '#CE93D8', fontSize: 13 }]} numberOfLines={2}>{selectedDevice.current_content}</Text>
+                        </View>
+                      </View>
+                    ) : null}
+
                     {/* Secondary actions */}
                     <View style={[styles.modalActions, { marginTop: 8 }]}>
                       <Pressable style={[styles.modalActionBtn, { backgroundColor: '#FF9800' }]} onPress={handleDeactivate} disabled={actionLoading}>
                         <Ionicons name="pause-circle-outline" size={16} color="#fff" />
                         <Text style={styles.modalActionText}> Desativar</Text>
                       </Pressable>
-                      <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReason(''); setBlockModal(true); }} disabled={actionLoading}>
-                        <Ionicons name="ban-outline" size={16} color="#fff" />
-                        <Text style={styles.modalActionText}> Bloquear</Text>
-                      </Pressable>
+                      {selectedDevice.blocked_reason ? (
+                        <Pressable style={[styles.modalActionBtn, { backgroundColor: '#4CAF50' }]} onPress={handleUnblock} disabled={actionLoading}>
+                          <Ionicons name="lock-open-outline" size={16} color="#fff" />
+                          <Text style={styles.modalActionText}> Desbloquear</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReason(''); setBlockModal(true); }} disabled={actionLoading}>
+                          <Ionicons name="ban-outline" size={16} color="#fff" />
+                          <Text style={styles.modalActionText}> Bloquear</Text>
+                        </Pressable>
+                      )}
                     </View>
 
                     <Pressable
@@ -1133,7 +1170,7 @@ export default function RepPanelScreen() {
                 <View style={styles.creditsCostRow}>
                   <Ionicons name="wallet-outline" size={14} color="#FFD700" />
                   <Text style={styles.creditsCostText}>
-                    Custo: {Math.ceil(parseInt(renewDays) / 30)} cr. — Saldo após: {(rep?.credits ?? 0) - Math.ceil(parseInt(renewDays) / 30)} cr.
+                    {(() => { const cost = Math.round((parseInt(renewDays) / 30) * 100) / 100; return `Custo: ${cost.toFixed(2)} cr. — Saldo após: ${Math.round(((rep?.credits ?? 0) - cost) * 100) / 100} cr.`; })()}
                   </Text>
                 </View>
               ) : null}

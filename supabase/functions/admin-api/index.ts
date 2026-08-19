@@ -53,6 +53,20 @@ Deno.serve(async (req) => {
       return json({ ok: true, rep });
     }
 
+    // ── Validate a representative code publicly (for client login screen) ─────
+    if (action === 'validateRepCode') {
+      const { repNumber } = body;
+      if (!repNumber) return json({ ok: false });
+      const { data: rep } = await supabase
+        .from('representatives')
+        .select('id, name, rep_number')
+        .eq('rep_number', repNumber)
+        .eq('active', true)
+        .maybeSingle();
+      if (!rep) return json({ ok: false, error: 'Código de representante não encontrado' });
+      return json({ ok: true, repId: rep.id, repName: rep.name });
+    }
+
     // ── Validate representative credentials helper ─────────────────────────────
     // Rep actions pass repId + repPassword instead of adminPassword
     async function validateRep(repId: string, repPassword: string): Promise<boolean> {
@@ -63,6 +77,12 @@ Deno.serve(async (req) => {
         .eq('active', true)
         .maybeSingle();
       return !!rep && rep.password_hash === repPassword;
+    }
+
+    // ── Credit cost helper: proportional (days / 30), rounded to 2 decimals ──
+    // 30 days = 1.00 credit, 15 days = 0.50, 32 days = 1.07, 61 days = 2.03
+    function computeCreditCost(days: number): number {
+      return Math.round((days / 30) * 100) / 100;
     }
 
     // ── Rep Panel actions (authenticated by repId + repPassword) ──────────────
@@ -112,8 +132,11 @@ Deno.serve(async (req) => {
         .single();
       if (!rep) throw new Error('Representante não encontrado');
 
-      const creditsNeeded = Math.ceil(days / 30);
-      if (rep.credits < creditsNeeded) throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), precisa de ${creditsNeeded}.`);
+      // Proportional credit cost: e.g. 32 days = 1.07 credits
+      const creditCost = computeCreditCost(parseInt(days));
+      if (rep.credits < creditCost) {
+        throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
+      }
 
       const { data: source } = await supabase
         .from('sources')
@@ -147,13 +170,12 @@ Deno.serve(async (req) => {
       }
 
       const now = new Date().toISOString();
-      // Use provided expiresAtDate or calculate from days
       let expiresAt: Date;
       if (expiresAtDate) {
         expiresAt = new Date(expiresAtDate);
       } else {
         expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + days);
+        expiresAt.setDate(expiresAt.getDate() + parseInt(days));
       }
       const normalizedEmail = email
         ? email.toLowerCase().trim()
@@ -199,21 +221,22 @@ Deno.serve(async (req) => {
         });
       }
 
+      // Deduct proportional credits (stored as float)
       await supabase.from('representatives').update({
-        credits: rep.credits - creditsNeeded,
+        credits: rep.credits - creditCost,
         updated_at: now,
       }).eq('id', repId);
 
       await supabase.from('credit_transactions').insert({
         rep_id: repId,
-        amount: creditsNeeded,
+        amount: Math.ceil(creditCost), // integer column — store ceiling for accounting
         type: 'consume',
-        description: `Ativação ${packageType?.toUpperCase()} — ${mac}`,
+        description: `Ativação ${parseInt(days)}d ${packageType?.toUpperCase()} — ${mac} (custo real: ${creditCost.toFixed(2)} cr.)`,
         device_mac: mac,
-        days,
+        days: parseInt(days),
       });
 
-      return json({ success: true });
+      return json({ success: true, credit_cost: creditCost });
     }
 
     // ── Rep: Free test activation (1–6 hours, no credit cost) ────────────────
@@ -338,6 +361,21 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
+    // ── Rep: Unblock a device — NO credit cost ────────────────────────────────
+    if (action === 'unblockRepDevice') {
+      const { deviceId, repId, repPassword } = body;
+      if (!await validateRep(repId, repPassword)) return authError();
+      const now = new Date().toISOString();
+      await supabase.from('devices').update({
+        activated: true,
+        blocked_reason: null,
+        block_reason_detail: null,
+        blocked_at: null,
+        updated_at: now,
+      }).eq('id', deviceId).eq('rep_id', repId);
+      return json({ success: true });
+    }
+
     if (action === 'deleteRepDevice') {
       const { deviceId, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
@@ -346,37 +384,33 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
-    // ── Rep: Renew device subscription ────────────────────────────────────────
-
+    // ── Rep: Renew device subscription (proportional credits) ─────────────────
     if (action === 'renewRepDevice') {
       const { deviceId, repId, repPassword, days } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!deviceId || !days) throw new Error('Dados incompletos');
 
       const daysNum = Math.max(1, parseInt(days));
-      const creditsNeeded = Math.ceil(daysNum / 30);
+      const creditCost = computeCreditCost(daysNum);
 
-      // Verify device belongs to this rep
       const { data: device } = await supabase
         .from('devices')
-        .select('id, expires_at, plan_id')
+        .select('id, expires_at, mac_address')
         .eq('id', deviceId)
         .eq('rep_id', repId)
         .maybeSingle();
       if (!device) throw new Error('Dispositivo não encontrado na sua rede');
 
-      // Check credits
       const { data: rep } = await supabase
         .from('representatives')
         .select('credits')
         .eq('id', repId)
         .single();
       if (!rep) throw new Error('Representante não encontrado');
-      if (rep.credits < creditsNeeded) {
-        throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), precisa de ${creditsNeeded}.`);
+      if (rep.credits < creditCost) {
+        throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta renovação custa ${creditCost.toFixed(2)}.`);
       }
 
-      // Calculate new expiry: extend from current expiry or from now, whichever is later
       const baseDate = device.expires_at && new Date(device.expires_at) > new Date()
         ? new Date(device.expires_at)
         : new Date();
@@ -393,26 +427,22 @@ Deno.serve(async (req) => {
         updated_at: now,
       }).eq('id', deviceId);
 
-      // Deduct credits
       await supabase.from('representatives').update({
-        credits: rep.credits - creditsNeeded,
+        credits: rep.credits - creditCost,
         updated_at: now,
       }).eq('id', repId);
 
-      // Log transaction
       await supabase.from('credit_transactions').insert({
         rep_id: repId,
-        amount: creditsNeeded,
+        amount: Math.ceil(creditCost),
         type: 'consume',
-        description: `Renovação ${daysNum}d — ${deviceId}`,
-        device_mac: device.id,
+        description: `Renovação ${daysNum}d — ${device.mac_address} (custo real: ${creditCost.toFixed(2)} cr.)`,
+        device_mac: device.mac_address,
         days: daysNum,
       });
 
-      return json({ success: true, new_expiry: newExpiry });
+      return json({ success: true, new_expiry: newExpiry, credit_cost: creditCost });
     }
-
-    // ── Validate rep code (public — for client login screen) ──────────────────
 
     if (action === 'lookupDeviceByMac') {
       const { mac, repId, repPassword } = body;
@@ -425,19 +455,6 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (!dev) return json({ found: false });
       return json({ found: true, client_name: dev.client_name || '', email: dev.email || '' });
-    }
-
-    if (action === 'validateRepCode') {
-      const { repNumber } = body;
-      if (!repNumber) return json({ ok: false });
-      const { data: rep } = await supabase
-        .from('representatives')
-        .select('id, name, rep_number')
-        .eq('rep_number', repNumber)
-        .eq('active', true)
-        .maybeSingle();
-      if (!rep) return json({ ok: false, error: 'Código de representante não encontrado' });
-      return json({ ok: true, repId: rep.id, repName: rep.name });
     }
 
     // ── Admin-auth check ──────────────────────────────────────────────────────
@@ -588,6 +605,7 @@ Deno.serve(async (req) => {
     // ── Existing admin device actions ─────────────────────────────────────────
 
     if (action === 'get_devices') {
+      // Include rep info so admin can see who activated the device
       const { data: devices, error } = await supabase
         .from('devices')
         .select('*, plans(id, name, server_url), representatives(rep_number, name)')

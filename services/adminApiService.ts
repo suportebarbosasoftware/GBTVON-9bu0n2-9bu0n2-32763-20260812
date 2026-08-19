@@ -26,6 +26,8 @@ export interface Device {
   grace_period_used: boolean;
   notes: string | null;
   price: number | null;
+  client_name?: string | null;
+  rep_id?: string | null;
   current_content: string | null;
   current_content_type: string | null;
   current_content_at: string | null;
@@ -34,6 +36,10 @@ export interface Device {
     id: string;
     name: string;
     server_url: string;
+  } | null;
+  representatives?: {
+    rep_number: string;
+    name: string;
   } | null;
 }
 

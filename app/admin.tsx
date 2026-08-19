@@ -527,7 +527,8 @@ export default function AdminScreen() {
                     <View style={styles.deviceCardHeader}>
                       <View style={[styles.statusIndicator, { backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]} />
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
+                        {d.client_name ? <Text style={[styles.deviceCardEmail, { fontWeight: '800' }]} numberOfLines={1}>{d.client_name}</Text> : null}
+                        <Text style={d.client_name ? [styles.deviceCardMac, { color: 'rgba(255,255,255,0.6)', fontSize: 11 }] : styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
                         <Text style={styles.deviceCardMac}>{d.mac_address}</Text>
                       </View>
                       <View style={styles.deviceCardRight}>
@@ -542,6 +543,7 @@ export default function AdminScreen() {
                       <Text style={styles.deviceCardMetaText}>{d.platform || 'N/A'} • {d.device_name || '—'}</Text>
                       <Text style={styles.deviceCardMetaText}>Visto: {formatLastSeen(d.last_seen_at)}</Text>
                     </View>
+                    {d.representatives ? <View style={styles.currentContentBar}><Ionicons name="headset-outline" size={11} color="#FFD700" /><Text style={[styles.currentContentText, { color: '#FFD700' }]} numberOfLines={1}> Rep #{d.representatives.rep_number} {d.representatives.name}</Text></View> : null}
                     {d.current_content ? <View style={styles.currentContentBar}><Ionicons name="play-circle-outline" size={11} color="#9C27B0" /><Text style={styles.currentContentText} numberOfLines={1}> {d.current_content}</Text></View> : null}
                     {d.expires_at ? (
                       <View style={[styles.expiryBar, new Date(d.expires_at) < new Date() ? { backgroundColor: 'rgba(229,0,0,0.08)' } : { backgroundColor: 'rgba(76,175,80,0.08)' }]}>
@@ -737,10 +739,22 @@ export default function AdminScreen() {
               <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>
                 {selectedDevice && (
                   <>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
                       <Text style={[styles.modalTitle, { flex: 1, marginBottom: 0 }]}>Detalhes</Text>
                       {isOnline(selectedDevice.last_seen_at) && <View style={styles.onlinePill}><View style={styles.onlinePillDot} /><Text style={styles.onlinePillText}>ONLINE</Text></View>}
                     </View>
+                    {selectedDevice.client_name ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(229,0,0,0.06)', borderRadius: 8, padding: 10, marginBottom: 8, borderWidth: 1, borderColor: 'rgba(229,0,0,0.15)', gap: 8 }}>
+                        <Ionicons name="person-circle-outline" size={16} color={Colors.primary} />
+                        <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700', flex: 1 }}>{selectedDevice.client_name}</Text>
+                      </View>
+                    ) : null}
+                    {selectedDevice.representatives ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,215,0,0.06)', borderRadius: 8, padding: 8, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,215,0,0.2)', gap: 8 }}>
+                        <Ionicons name="headset-outline" size={14} color="#FFD700" />
+                        <Text style={{ color: '#FFD700', fontSize: 12, fontWeight: '600' }}>Rep #{selectedDevice.representatives.rep_number} - {selectedDevice.representatives.name}</Text>
+                      </View>
+                    ) : null}
                     {[
                       { icon: 'mail-outline', label: 'E-mail', value: selectedDevice.email },
                       { icon: 'hardware-chip-outline', label: 'MAC', value: selectedDevice.mac_address, mono: true },

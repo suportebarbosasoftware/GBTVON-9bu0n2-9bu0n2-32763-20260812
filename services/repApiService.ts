@@ -277,14 +277,20 @@ export async function blockRepDevice(deviceId: string, reason?: string): Promise
   await callRep('blockRepDevice', { deviceId, reason });
 }
 
+/** Unblock a device — does NOT consume credits */
+export async function unblockRepDevice(deviceId: string): Promise<void> {
+  await callRep('unblockRepDevice', { deviceId });
+}
+
 export async function deleteRepDevice(deviceId: string): Promise<void> {
   await callRep('deleteRepDevice', { deviceId });
 }
 
 /**
  * Renew a device's subscription by adding `days` to its current expiry.
- * Consumes Math.ceil(days / 30) credits from the representative.
+ * Consumes proportional credits: days/30 (e.g. 15d = 0.50 cr, 32d = 1.07 cr).
  */
-export async function renewRepDevice(deviceId: string, days: number): Promise<void> {
-  await callRep('renewRepDevice', { deviceId, days });
+export async function renewRepDevice(deviceId: string, days: number): Promise<{ credit_cost: number; new_expiry: string }> {
+  const data = await callRep('renewRepDevice', { deviceId, days });
+  return { credit_cost: data?.credit_cost ?? 0, new_expiry: data?.new_expiry ?? '' };
 }
