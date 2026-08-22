@@ -45,7 +45,7 @@ export function useLiveTV() {
     if (auth) loadData();
   }, [auth]);
 
-  async function loadData() {
+  async function loadData(forceRefresh = false) {
     if (!auth) return;
     setLoading(true);
     try {
@@ -57,7 +57,7 @@ export function useLiveTV() {
         // Network calls in parallel
         Promise.all([
           getLiveCategories(auth),
-          getLiveStreams(auth),
+          getLiveStreams(auth, undefined, forceRefresh),
         ]),
         // Local AsyncStorage reads in parallel
         Promise.all([
@@ -210,7 +210,7 @@ export function useLiveTV() {
     setSearchQuery,
     selectCategory,
     getStreamUrl,
-    refresh: loadData,
+    refresh: () => loadData(true),
     hideChannelByKey,
     showChannelByKey,
     hideCategoryById,

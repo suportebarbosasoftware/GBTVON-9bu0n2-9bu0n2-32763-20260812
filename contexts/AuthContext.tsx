@@ -12,8 +12,9 @@ import {
 } from '@/services/activationService';
 import { getDeviceId } from '@/services/deviceIdService';
 
-// Re-check activation every 2 minutes while app is in foreground
-const POLL_INTERVAL_MS = 2 * 60 * 1000;
+// Access is checked in the background only. Content navigation must never be
+// interrupted by an activation check, especially on lower-powered TV boxes.
+const POLL_INTERVAL_MS = 30 * 60 * 1000;
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -57,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const appStateRef = useRef<AppStateStatus>('active');
   const isAuthenticatedRef = useRef(false);
+  const silentRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
     initAuth();
@@ -78,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   function startPolling() {
-    stopPolling();
+    if (pollTimerRef.current) return;
     pollTimerRef.current = setInterval(() => {
       silentRefresh();
     }, POLL_INTERVAL_MS);
@@ -97,14 +99,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   async function silentRefresh() {
     const email = userEmailRef.current;
-    if (!email) return;
+    if (!email || silentRefreshInFlightRef.current) return;
+    silentRefreshInFlightRef.current = true;
     try {
       const result = await checkActivation(email);
       // Only apply if server gave a definitive answer — ignore errors/timeouts
       if (result.status === 'error') return;
       applyActivationResult(result, true);
       await storeActivation(result);
-    } catch {}
+    } catch {} finally {
+      silentRefreshInFlightRef.current = false;
+    }
   }
 
   async function initAuth() {
@@ -137,6 +142,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function silentRefreshWithEmail(email: string) {
+    if (silentRefreshInFlightRef.current) return;
+    silentRefreshInFlightRef.current = true;
     try {
       // 15-second timeout so it never hangs indefinitely
       const result = await Promise.race([
@@ -149,7 +156,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (result.status === 'error') return;
       applyActivationResult(result, true);
       await storeActivation(result);
-    } catch {}
+    } catch {} finally {
+      silentRefreshInFlightRef.current = false;
+    }
   }
 
   function applyActivationResult(result: ActivationResult, silent = false) {
@@ -169,12 +178,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password: result.credentials.password,
         server: result.credentials.server,
       };
-      setAuth(authData);
+      // Do not replace auth with an equivalent object. The content hooks use
+      // this reference as a dependency, so replacing it forced every catalog
+      // to reload and reset its TV list even when the license was unchanged.
+      setAuth(current =>
+        current &&
+        current.username === authData.username &&
+        current.password === authData.password &&
+        current.server === authData.server
+          ? current
+          : authData
+      );
       setPlanName(result.plan_name || null);
       setExpiresAt(result.expires_at || null);
       setIsAuthenticated(true);
+      const becameAuthenticated = !isAuthenticatedRef.current;
       isAuthenticatedRef.current = true;
-      startPolling();
+      if (becameAuthenticated) startPolling();
     } else if (result.status === 'blocked_manual' || result.status === 'expired') {
       // Only these definitive statuses revoke access
       setAuth(null);

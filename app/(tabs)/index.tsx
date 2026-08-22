@@ -337,11 +337,12 @@ export default function LiveTVScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.listContent}
           stickySectionHeadersEnabled
-          // TV D-Pad: keep all items mounted + disable scroll so only
-          // programmatic scrollToLocation (item-by-item) is used
-          removeClippedSubviews={false}
+          // Keeping every channel mounted makes Android TV spend time laying
+          // out thousands of focusable views on every D-pad action. A wide
+          // virtual window keeps the next items focusable without that cost.
+          removeClippedSubviews={IS_TV}
           scrollEnabled={!IS_TV}
-          windowSize={IS_TV ? 21 : 10}
+          windowSize={IS_TV ? 9 : 10}
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHeader}>
               <View style={styles.sectionDot} />
@@ -354,8 +355,8 @@ export default function LiveTVScreen() {
             return renderChannelItem(item, index, sectionIndex);
           }}
           ListEmptyComponent={<EmptyChannels />}
-          initialNumToRender={IS_TV ? 30 : 20}
-          maxToRenderPerBatch={IS_TV ? 30 : 20}
+          initialNumToRender={IS_TV ? 16 : 20}
+          maxToRenderPerBatch={IS_TV ? 12 : 20}
           onScrollToIndexFailed={() => {}}
         />
       ) : (
@@ -365,15 +366,15 @@ export default function LiveTVScreen() {
           keyExtractor={item => `${item.categoryId}::${item.baseName}`}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          // TV D-Pad: keep all items mounted + disable scroll so only
-          // programmatic scrollToIndex (item-by-item) is used
-          removeClippedSubviews={false}
+          // Keep a generous focus window instead of mounting the complete
+          // catalog of channels on Android TV.
+          removeClippedSubviews={IS_TV}
           scrollEnabled={!IS_TV}
-          windowSize={IS_TV ? 21 : 10}
+          windowSize={IS_TV ? 9 : 10}
           renderItem={({ item, index }) => renderChannelItem(item, index)}
           ListEmptyComponent={<EmptyChannels />}
-          initialNumToRender={IS_TV ? 30 : 20}
-          maxToRenderPerBatch={IS_TV ? 30 : 20}
+          initialNumToRender={IS_TV ? 16 : 20}
+          maxToRenderPerBatch={IS_TV ? 12 : 20}
           onScrollToIndexFailed={() => {}}
         />
       )}

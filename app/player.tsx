@@ -223,6 +223,8 @@ export default function PlayerScreen() {
   const channelListRef = useRef<FlatList>(null);
   const channelBrowserVisibleRef = useRef(false);
   const currentChannelIndexRef = useRef(0);
+  const channelChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestedChannelIndexRef = useRef<number | null>(null);
   const changeChannelRef = useRef<(idx: number) => void>(() => {});
   const openChannelBrowserRef = useRef<() => void>(() => {});
 
@@ -250,18 +252,27 @@ export default function PlayerScreen() {
   function changeChannel(idx: number) {
     if (!auth || !allChannels[idx]) return;
     const stream = allChannels[idx];
-    const newUrl = getLiveStreamUrl(auth, stream.stream_id);
     setCurrentChannelIndex(idx);
     currentChannelIndexRef.current = idx;
-    try {
-      player.pause();
-      player.replace({ uri: newUrl });
-      player.play();
-    } catch {}
+    requestedChannelIndexRef.current = idx;
+    setIsBuffering(true);
+
+    // A held D-pad key can emit several events quickly. Keep navigation
+    // immediate, but replace the video source only once for the final channel.
+    if (channelChangeTimerRef.current) clearTimeout(channelChangeTimerRef.current);
+    channelChangeTimerRef.current = setTimeout(() => {
+      const requestedIndex = requestedChannelIndexRef.current;
+      if (requestedIndex === null || !allChannels[requestedIndex]) return;
+      const requested = allChannels[requestedIndex];
+      try {
+        player.replace({ uri: getLiveStreamUrl(auth, requested.stream_id) });
+        player.play();
+      } catch {}
+    }, IS_TV ? 120 : 0);
+
     try {
       channelListRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.4 });
     } catch {}
-    setIsBuffering(true);
   }
 
   function openChannelBrowser() {
@@ -274,13 +285,26 @@ export default function PlayerScreen() {
     openChannelBrowserRef.current = openChannelBrowser;
   });
 
+  useEffect(() => () => {
+    if (channelChangeTimerRef.current) clearTimeout(channelChangeTimerRef.current);
+  }, []);
+
   // ── EPG for current channel ────────────────────────────────────────────
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
+  const epgRequestIdRef = useRef(0);
 
   useEffect(() => {
     if (!isLive || !auth || !allChannels[currentChannelIndex]) return;
     const stream = allChannels[currentChannelIndex];
-    getShortEpg(auth, stream.stream_id, 3).then(progs => setEpgPrograms(progs));
+    const requestId = ++epgRequestIdRef.current;
+    // EPG is auxiliary information. Delay it slightly so it never competes
+    // with the stream request while the user is rapidly changing channels.
+    const timer = setTimeout(() => {
+      getShortEpg(auth, stream.stream_id, 3).then(progs => {
+        if (epgRequestIdRef.current === requestId) setEpgPrograms(progs);
+      });
+    }, 350);
+    return () => clearTimeout(timer);
   }, [currentChannelIndex, isLive, auth, allChannels]);
 
   // ── Back button ────────────────────────────────────────────────────────
@@ -582,11 +606,13 @@ export default function PlayerScreen() {
             data={allChannels}
             keyExtractor={item => String(item.stream_id)}
             showsVerticalScrollIndicator={false}
-            removeClippedSubviews={false}
+            // The browser can contain thousands of streams. Rendering all of
+            // them makes D-pad navigation sluggish on Android TV boxes.
+            removeClippedSubviews={IS_TV}
             scrollEnabled={!IS_TV}
-            windowSize={IS_TV ? 21 : 10}
-            initialNumToRender={IS_TV ? 30 : 15}
-            maxToRenderPerBatch={IS_TV ? 30 : 15}
+            windowSize={IS_TV ? 9 : 10}
+            initialNumToRender={IS_TV ? 16 : 15}
+            maxToRenderPerBatch={IS_TV ? 12 : 15}
             onScrollToIndexFailed={() => {}}
             contentContainerStyle={{ paddingVertical: 8 }}
             renderItem={({ item, index }) => {

@@ -42,6 +42,10 @@ export interface LiveStream {
   tv_archive_duration: number;
 }
 
+const LIVE_STREAM_CACHE_TTL_MS = 5 * 60 * 1000;
+const liveStreamCache = new Map<string, { expiresAt: number; streams: LiveStream[] }>();
+const liveStreamRequests = new Map<string, Promise<LiveStream[]>>();
+
 export interface VodCategory {
   category_id: string;
   category_name: string;
@@ -173,15 +177,41 @@ export async function getLiveCategories(auth: XtreamAuth): Promise<LiveCategory[
   }
 }
 
-export async function getLiveStreams(auth: XtreamAuth, categoryId?: string): Promise<LiveStream[]> {
-  try {
-    const params: Record<string, string> = { action: 'get_live_streams' };
-    if (categoryId) params.category_id = categoryId;
-    const data = await apiCall(auth, params);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
+export async function getLiveStreams(
+  auth: XtreamAuth,
+  categoryId?: string,
+  forceRefresh = false
+): Promise<LiveStream[]> {
+  const cacheKey = `${auth.server}|${auth.username}|${auth.password}|${categoryId ?? 'all'}`;
+  const now = Date.now();
+  const cached = liveStreamCache.get(cacheKey);
+
+  if (!forceRefresh && cached && cached.expiresAt > now) {
+    return cached.streams;
   }
+
+  const pendingRequest = liveStreamRequests.get(cacheKey);
+  if (pendingRequest) return pendingRequest;
+
+  const params: Record<string, string> = { action: 'get_live_streams' };
+  if (categoryId) params.category_id = categoryId;
+
+  const request = apiCall(auth, params)
+    .then(data => {
+      const streams = Array.isArray(data) ? data : [];
+      liveStreamCache.set(cacheKey, {
+        streams,
+        expiresAt: Date.now() + LIVE_STREAM_CACHE_TTL_MS,
+      });
+      return streams;
+    })
+    .catch(() => [])
+    .finally(() => {
+      liveStreamRequests.delete(cacheKey);
+    });
+
+  liveStreamRequests.set(cacheKey, request);
+  return request;
 }
 
 export async function getVodCategories(auth: XtreamAuth): Promise<VodCategory[]> {
