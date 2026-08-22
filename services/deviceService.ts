@@ -3,7 +3,7 @@
  * Detects device type: phone, tablet, Android TV, TV Box, Amazon Fire TV
  * and builds an optimized profile for each.
  */
-import { Platform, Dimensions } from 'react-native';
+import { Platform, Dimensions, NativeModules } from 'react-native';
 
 export type DeviceType = 'phone' | 'tablet' | 'androidtv' | 'tvbox';
 
@@ -23,8 +23,12 @@ export interface DeviceProfile {
 function getDeviceType(): DeviceType {
   // Platform.isTV is set by React Native for Android TV, Google TV, Fire TV
   const platformIsTV = (Platform as any).isTV === true;
+  // Some TV Boxes incorrectly report uiMode as "normal". The native module
+  // complements React Native with the actual Leanback/touchscreen capability.
+  const nativeTVBox = Platform.OS === 'android' &&
+    (NativeModules as any).TVDeviceInfo?.isTelevision === true;
 
-  if (platformIsTV) {
+  if (platformIsTV || nativeTVBox) {
     const { width } = Dimensions.get('window');
     return width >= 1280 ? 'androidtv' : 'tvbox';
   }

@@ -3,6 +3,7 @@ import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -12,6 +13,8 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  private var tvFocusIndicator: TVFocusIndicator? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
@@ -21,6 +24,24 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    // Added above the Activity as a Drawable, never as a React view.  This
+    // makes it one visual indicator for every focusable native control.
+    window.decorView.post {
+      if (!isFinishing && !isDestroyed) {
+        tvFocusIndicator = TVFocusIndicator(window.decorView)
+      }
+    }
+  }
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    tvFocusIndicator?.onKeyEvent(event)
+    return super.dispatchKeyEvent(event)
+  }
+
+  override fun onDestroy() {
+    tvFocusIndicator?.dispose()
+    tvFocusIndicator = null
+    super.onDestroy()
   }
 
   /**

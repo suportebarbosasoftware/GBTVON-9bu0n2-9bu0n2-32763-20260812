@@ -6,15 +6,17 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
 /**
- * TVFocusablePackage — registers TVFocusableViewManager with React Native
+ * TVDeviceInfoPackage — exposes only device information to JavaScript.
+ * Visual focus is handled once by TVFocusIndicator in MainActivity.
  */
 class TVFocusablePackage : ReactPackage {
 
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return emptyList()
+        return listOf(TVDeviceInfoModule(reactContext))
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
-        return listOf(TVFocusableViewManager())
+        return emptyList()
     }
+
 }

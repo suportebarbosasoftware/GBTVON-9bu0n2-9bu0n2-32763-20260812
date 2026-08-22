@@ -89,27 +89,6 @@ export function useTVRemote(_onEvent: DPadHandler, _active = true) {
 }
 
 /**
- * tvFocusStyle — returns a focus ring style object for a given focused state.
- * Use with inline Pressable styles when TVFocusable is not applicable.
- *
- * @example
- * <Pressable style={[styles.btn, isFocused && tvFocusStyle(isFocused)]} />
- */
-export function tvFocusStyle(isFocused: boolean, scale = 1.04) {
-  if (!isFocused || !IS_TV) return {};
-  return {
-    borderColor: '#E50000',
-    borderWidth: 3,
-    shadowColor: '#E50000',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.85,
-    shadowRadius: 14,
-    elevation: 18,
-    transform: [{ scale }],
-  };
-}
-
-/**
  * isLandscapeDevice — true when the device is in landscape orientation
  * or is a TV (which is always landscape).
  */
