@@ -4,6 +4,7 @@ import expo.modules.splashscreen.SplashScreenManager
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -14,6 +15,7 @@ import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
   private var tvFocusIndicator: TVFocusIndicator? = null
+  private var playerRemoteKeysEnabled = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
@@ -35,8 +37,37 @@ class MainActivity : ReactActivity() {
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
     tvFocusIndicator?.onKeyEvent(event)
+    if (playerRemoteKeysEnabled && event.action == KeyEvent.ACTION_DOWN && isPlayerRemoteKey(event.keyCode)) {
+      TVDeviceInfoModule.emitRemoteKey(event.keyCode)
+      return true
+    }
     return super.dispatchKeyEvent(event)
   }
+
+  fun setFocusIndicatorEnabled(enabled: Boolean) {
+    tvFocusIndicator?.setFocusIndicatorEnabled(enabled)
+  }
+
+  fun setKeepScreenOn(enabled: Boolean) {
+    if (enabled) {
+      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    } else {
+      window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+  }
+
+  fun setPlayerRemoteKeysEnabled(enabled: Boolean) {
+    playerRemoteKeysEnabled = enabled
+  }
+
+  private fun isPlayerRemoteKey(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+    keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+    keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+    keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+    keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+    keyCode == KeyEvent.KEYCODE_ENTER ||
+    keyCode == KeyEvent.KEYCODE_BUTTON_A ||
+    keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
 
   override fun onDestroy() {
     tvFocusIndicator?.dispose()

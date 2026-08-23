@@ -36,6 +36,7 @@ class TVFocusIndicator(private val decorView: View) : Drawable(),
     private val starPath = Path()
     private var target: View? = null
     private var remoteNavigationSeen = isTelevisionDevice()
+    private var focusIndicatorEnabled = true
     private var disposed = false
 
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -65,6 +66,7 @@ class TVFocusIndicator(private val decorView: View) : Drawable(),
 
     /** Called by MainActivity before Android dispatches D-pad navigation. */
     fun onKeyEvent(event: KeyEvent) {
+        if (!focusIndicatorEnabled) return
         if (event.action != KeyEvent.ACTION_DOWN || !isRemoteNavigationKey(event.keyCode)) return
         remoteNavigationSeen = true
         // The focused View changes while the event is dispatched. Posting
@@ -73,11 +75,11 @@ class TVFocusIndicator(private val decorView: View) : Drawable(),
     }
 
     override fun onGlobalFocusChanged(oldFocus: View?, newFocus: View?) {
-        if (remoteNavigationSeen) updateTarget(newFocus)
+        if (focusIndicatorEnabled && remoteNavigationSeen) updateTarget(newFocus)
     }
 
     override fun onPreDraw(): Boolean {
-        if (remoteNavigationSeen && target != null) updateTarget(target)
+        if (focusIndicatorEnabled && remoteNavigationSeen && target != null) updateTarget(target)
         return true
     }
 
@@ -86,11 +88,11 @@ class TVFocusIndicator(private val decorView: View) : Drawable(),
         oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int
     ) {
         updateBounds()
-        updateTarget(target)
+        if (focusIndicatorEnabled) updateTarget(target)
     }
 
     override fun draw(canvas: Canvas) {
-        if (target == null || targetRect.isEmpty()) return
+        if (!focusIndicatorEnabled || target == null || targetRect.isEmpty()) return
 
         val radius = 10f * density
         canvas.drawRoundRect(targetRect, radius, radius, glowPaint)
@@ -128,8 +130,21 @@ class TVFocusIndicator(private val decorView: View) : Drawable(),
         target = null
     }
 
+    fun setFocusIndicatorEnabled(enabled: Boolean) {
+        if (disposed || focusIndicatorEnabled == enabled) return
+        focusIndicatorEnabled = enabled
+        if (!enabled) {
+            target = null
+            targetRect.setEmpty()
+            lastTargetRect.setEmpty()
+            invalidateSelf()
+            return
+        }
+        decorView.post { updateTarget(decorView.rootView.findFocus()) }
+    }
+
     private fun updateTarget(candidate: View?) {
-        if (disposed) return
+        if (disposed || !focusIndicatorEnabled) return
         if (candidate == null || candidate === decorView || !candidate.isShown || !candidate.isFocusable) {
             if (target != null) {
                 target = null

@@ -118,7 +118,8 @@ export interface WatchProgress {
 
 export async function saveProgress(item: WatchProgress): Promise<void> {
   try {
-    // Only save if watched > 5% and < 95% (not at start or fully done)
+    // Save any meaningful position. A short video can be well under 5% after
+    // a few seconds, and the player also saves immediately on app exit.
     const pct = item.duration > 0 ? item.position / item.duration : 0;
     const raw = await AsyncStorage.getItem(PROGRESS_KEY);
     const map: Record<string, WatchProgress> = raw ? JSON.parse(raw) : {};
@@ -127,7 +128,7 @@ export async function saveProgress(item: WatchProgress): Promise<void> {
       delete map[item.id];
       await AsyncStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
       await markEpisodeCompleted(item.id, item.seriesId);
-    } else if (pct >= 0.03 || item.position > 30) {
+    } else if (item.position > 5) {
       map[item.id] = { ...item, updatedAt: Date.now() };
       await AsyncStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
     }

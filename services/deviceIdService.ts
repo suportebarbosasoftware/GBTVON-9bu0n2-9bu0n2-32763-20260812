@@ -4,9 +4,9 @@
  * app uninstalls and data clears.
  *
  * Priority order for stability:
- *  1. expo-application AndroidId (survives reinstall on Android ≥ Q)
- *  2. expo-device modelName + a UUID seeded to androidId (deterministic)
- *  3. Random UUID (last resort — only if all above fail)
+ *  1. Native Android SSAID (survives reinstall with the same signed APK)
+ *  2. expo-application AndroidId (compatibility fallback)
+ *  3. Cached or generated identifier (last resort)
  *
  * The computed value is cached in AsyncStorage for fast synchronous-like
  * access on subsequent calls, but the primary source is always the hardware id.
@@ -15,14 +15,14 @@
  * "Cannot read property 'NativeModule' of undefined" crash on Android TV.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 
 const DEVICE_ID_KEY = 'gbtvon_device_id';
 // Separate key — stores the hardware-derived ID so we can verify cache integrity
 const DEVICE_HW_KEY = 'gbtvon_device_hw';
 
 /** Safely read expo-application.androidId — never throws */
-function safeGetAndroidId(): string | null {
+function safeGetExpoAndroidId(): string | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Application = require('expo-application');
@@ -32,6 +32,21 @@ function safeGetAndroidId(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Reads Android's SSAID from our native module. This is the primary source on
+ * phones and Android TV because it is still available after app data is
+ * deleted. expo-application remains as a compatibility fallback.
+ */
+async function getStableAndroidId(): Promise<string | null> {
+  try {
+    const nativeId = await NativeModules.TVDeviceInfo?.getAndroidId?.();
+    if (typeof nativeId === 'string' && nativeId.length >= 8) return nativeId;
+  } catch {
+    // Fall through to expo-application below.
+  }
+  return safeGetExpoAndroidId();
 }
 
 /** Safely get device model info — never throws */
@@ -77,7 +92,7 @@ function toMacFormat(hex: string): string {
  */
 export async function getDeviceId(): Promise<string> {
   try {
-    const androidId = safeGetAndroidId();
+    const androidId = await getStableAndroidId();
 
     if (androidId) {
       // Check if we already have a cached MAC for this exact androidId
@@ -90,6 +105,11 @@ export async function getDeviceId(): Promise<string> {
         // Cache is valid and was derived from the same hardware ID
         return cached;
       }
+
+      // Preserve the MAC already activated by installations from before the
+      // native Android ID reader existed. New installs use the stable path;
+      // this branch prevents an app update from invalidating a paid device.
+      if (cached && !cachedHw) return cached;
 
       // Derive deterministic MAC from hardware ID
       const hex = deterministicHash(androidId);
