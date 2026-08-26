@@ -1080,19 +1080,18 @@ export default function RepPanelScreen() {
                           <Text style={styles.renewCreditBadgeText}> {rep?.credits ?? 0}</Text>
                         </View>
                       </Pressable>
-                      {sources.length > 1 && (
-                        <Pressable
-                          style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0, backgroundColor: '#1565C0' }, actionLoading && { opacity: 0.5 }]}
-                          onPress={() => {
-                            setEditSourceId(selectedDevice?.source_id ?? '');
-                            setEditSourceModal(true);
-                          }}
-                          disabled={actionLoading}
-                        >
-                          <Ionicons name="swap-horizontal-outline" size={18} color="#fff" />
-                          <Text style={[styles.renewBtnText, { fontSize: 13 }]}> Trocar Fonte</Text>
-                        </Pressable>
-                      )}
+                      <Pressable
+                        style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0, backgroundColor: '#1565C0' }, actionLoading && { opacity: 0.5 }]}
+                        onPress={() => {
+                          setEditSourceId('');
+                          setDetailModal(false);
+                          setTimeout(() => setEditSourceModal(true), 300);
+                        }}
+                        disabled={actionLoading}
+                      >
+                        <Ionicons name="swap-horizontal-outline" size={18} color="#fff" />
+                        <Text style={[styles.renewBtnText, { fontSize: 13 }]}> Trocar Fonte</Text>
+                      </Pressable>
                     </View>
 
                     {/* Current content (what client is watching) */}
