@@ -364,6 +364,10 @@ export default function RepPanelScreen() {
 
   async function handleChangeSource() {
     if (!selectedDevice || !editSourceId) return;
+    if (editSourceId === selectedDevice.source_id) {
+      Alert.alert('Atenção', 'Selecione uma fonte diferente da atual.');
+      return;
+    }
     setEditSourceLoading(true);
     try {
       const result = await changeRepDeviceSource(selectedDevice.id, editSourceId);
@@ -371,8 +375,11 @@ export default function RepPanelScreen() {
       setDetailModal(false);
       await loadData(false);
       Alert.alert('Fonte alterada!', `Dispositivo migrado para a fonte "${result.source_name}" com sucesso.`);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
-    setEditSourceLoading(false);
+    } catch (e: any) {
+      Alert.alert('Erro', e.message || 'Falha ao trocar fonte. Tente novamente.');
+    } finally {
+      setEditSourceLoading(false);
+    }
   }
 
   async function handleUnblock() {
