@@ -24,6 +24,15 @@ const QUALITY_PATTERNS: { regex: RegExp; label: string; priority: number }[] = [
   { regex: /\s*[\|\[\(]?\s*SD\s*[\|\]\)]?\s*$/i, label: 'SD', priority: 1 },
 ];
 
+// Live sources carrying H.265/HEVC are deliberately excluded. The app uses
+// the remaining SD/HD/FHD/4K variants of the same channel, avoiding codecs
+// that are not reliable across the Android TV and TV Box devices in scope.
+const H265_CODEC_PATTERN = /H[.\s-]?265|HEVC|X265/i;
+
+function isH265Variant(name: string): boolean {
+  return H265_CODEC_PATTERN.test(name);
+}
+
 function parseChannelName(name: string): { baseName: string; qualityLabel: string | null; priority: number } {
   for (const p of QUALITY_PATTERNS) {
     if (p.regex.test(name)) {
@@ -38,6 +47,8 @@ export function groupChannels(streams: LiveStream[]): GroupedChannel[] {
   const map = new Map<string, GroupedChannel>();
 
   for (const stream of streams) {
+    if (isH265Variant(stream.name)) continue;
+
     const { baseName, qualityLabel, priority } = parseChannelName(stream.name);
 
     const key = `${stream.category_id}::${baseName.toLowerCase()}`;

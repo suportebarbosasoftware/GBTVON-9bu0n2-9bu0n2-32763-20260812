@@ -8,6 +8,22 @@ import {
 } from '@/services/xtreamApi';
 import { useAuth } from '@/hooks/useAuth';
 
+interface MoviesCatalogCache {
+  accountKey: string;
+  categories: VodCategory[];
+  movies: VodStream[];
+}
+
+// The tab layout unmounts inactive screens. Keeping this small in-memory
+// cache prevents a full IPTV catalog download every time the user returns
+// from the player or switches tabs. It is cleared naturally when the app
+// process closes and is bypassed by an explicit refresh.
+let moviesCatalogCache: MoviesCatalogCache | null = null;
+
+function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): string {
+  return `${auth.server}|${auth.username}|${auth.password}`;
+}
+
 export function useMovies() {
   const { auth } = useAuth();
   const [categories, setCategories] = useState<VodCategory[]>([]);
@@ -21,14 +37,25 @@ export function useMovies() {
     if (auth) loadData();
   }, [auth]);
 
-  async function loadData() {
+  async function loadData(forceRefresh = false) {
     if (!auth) return;
+    const accountKey = getAccountKey(auth);
+
+    if (!forceRefresh && moviesCatalogCache?.accountKey === accountKey) {
+      setCategories(moviesCatalogCache.categories);
+      setMovies(moviesCatalogCache.movies);
+      setFilteredMovies(moviesCatalogCache.movies);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const [cats, vods] = await Promise.all([
         getVodCategories(auth),
         getVodStreams(auth),
       ]);
+      moviesCatalogCache = { accountKey, categories: cats, movies: vods };
       setCategories(cats);
       setMovies(vods);
       setFilteredMovies(vods);
@@ -70,6 +97,6 @@ export function useMovies() {
     setSearchQuery,
     selectCategory: setSelectedCategory,
     getMovieUrl,
-    refresh: loadData,
+    refresh: () => loadData(true),
   };
 }

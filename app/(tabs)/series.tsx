@@ -24,6 +24,7 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { getHistory, HistoryItem } from '@/services/favoritesService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
+import TVCatalogSearch from '@/components/ui/TVCatalogSearch';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const CARD_W = IS_TV ? 160 : 110;
@@ -178,21 +179,30 @@ export default function SeriesScreen() {
       )}
 
       {/* Search */}
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={14} color={Colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Buscar série..."
-          placeholderTextColor={Colors.textMuted}
+      {IS_TV ? (
+        <TVCatalogSearch
+          label="Buscar série"
           value={searchQuery}
           onChangeText={setSearchQuery}
+          hasTVPreferredFocus
         />
-        {searchQuery.length > 0 && (
-          <Pressable onPress={() => setSearchQuery('')} hitSlop={8}>
-            <Ionicons name="close-circle" size={14} color={Colors.textMuted} />
-          </Pressable>
-        )}
-      </View>
+      ) : (
+        <View style={styles.searchContainer}>
+          <Ionicons name="search" size={14} color={Colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Buscar série..."
+            placeholderTextColor={Colors.textMuted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <Pressable onPress={() => setSearchQuery('')} hitSlop={8}>
+              <Ionicons name="close-circle" size={14} color={Colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
+      )}
 
       {/* Category chips */}
       <View style={styles.categoryBar}>

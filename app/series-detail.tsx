@@ -23,7 +23,9 @@ export default function SeriesDetailScreen() {
   const { seriesId, name, cover } = useLocalSearchParams<{ seriesId: string; name: string; cover: string }>();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { fetchSeriesInfo, getEpisodeUrl } = useSeries();
+  // This screen only needs one series' episode list. Avoid loading the full
+  // series catalog again while the user waits for an item to open.
+  const { fetchSeriesInfo, getEpisodeUrl } = useSeries(false);
   const [seriesInfo, setSeriesInfo] = useState<SeriesInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedSeason, setSelectedSeason] = useState<string>('');

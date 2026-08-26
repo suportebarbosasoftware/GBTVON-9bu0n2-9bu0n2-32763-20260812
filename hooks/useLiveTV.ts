@@ -23,6 +23,18 @@ import {
   NumberedChannel,
 } from '@/services/channelNumberService';
 
+interface LiveCatalogCache {
+  accountKey: string;
+  categories: LiveCategory[];
+  streams: LiveStream[];
+}
+
+let liveCatalogCache: LiveCatalogCache | null = null;
+
+function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): string {
+  return `${auth.server}|${auth.username}|${auth.password}`;
+}
+
 export function useLiveTV() {
   const { auth } = useAuth();
   const [categories, setCategories] = useState<LiveCategory[]>([]);
@@ -50,15 +62,19 @@ export function useLiveTV() {
     setLoading(true);
     try {
       // ── Parallel fetch: API calls + local prefs at the same time ─────────
+      const catalogPromise = !forceRefresh && liveCatalogCache?.accountKey === getAccountKey(auth)
+        ? Promise.resolve([liveCatalogCache.categories, liveCatalogCache.streams] as const)
+        : Promise.all([
+            getLiveCategories(auth),
+            getLiveStreams(auth, undefined, forceRefresh),
+          ]);
       const [
         [cats, strs],
         [filters, setupCompleted, channelKeys, existingNumbers],
       ] = await Promise.all([
-        // Network calls in parallel
-        Promise.all([
-          getLiveCategories(auth),
-          getLiveStreams(auth, undefined, forceRefresh),
-        ]),
+        // The catalog is reused after tab/player navigation; local settings
+        // are still read every time so user changes take effect immediately.
+        catalogPromise,
         // Local AsyncStorage reads in parallel
         Promise.all([
           loadFilterState(),
@@ -67,6 +83,8 @@ export function useLiveTV() {
           loadChannelNumbers(),
         ]),
       ]);
+
+      liveCatalogCache = { accountKey: getAccountKey(auth), categories: cats, streams: strs };
 
       setFilterState(filters);
       setSetupDone(setupCompleted);

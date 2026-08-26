@@ -36,4 +36,14 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# Local build and diagnostic artifacts
+*.apk
+*.log
+/.pnpm-store/
+/.codex-build-deps/
+/pnpm-workspace.yaml
+/android/*.png
+/android/*.xml
+/android/local-ndk.init.gradle
+
 app-example

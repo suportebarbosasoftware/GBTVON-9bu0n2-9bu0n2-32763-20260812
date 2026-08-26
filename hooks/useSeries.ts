@@ -10,7 +10,20 @@ import {
 } from '@/services/xtreamApi';
 import { useAuth } from '@/hooks/useAuth';
 
-export function useSeries() {
+interface SeriesCatalogCache {
+  accountKey: string;
+  categories: SeriesCategory[];
+  series: Series[];
+}
+
+let seriesCatalogCache: SeriesCatalogCache | null = null;
+
+function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): string {
+  return `${auth.server}|${auth.username}|${auth.password}`;
+}
+
+/** Set `loadCatalog` to false when only episode helpers are needed. */
+export function useSeries(loadCatalog = true) {
   const { auth } = useAuth();
   const [categories, setCategories] = useState<SeriesCategory[]>([]);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
@@ -20,17 +33,28 @@ export function useSeries() {
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    if (auth) loadData();
-  }, [auth]);
+    if (auth && loadCatalog) loadData();
+  }, [auth, loadCatalog]);
 
-  async function loadData() {
+  async function loadData(forceRefresh = false) {
     if (!auth) return;
+    const accountKey = getAccountKey(auth);
+
+    if (!forceRefresh && seriesCatalogCache?.accountKey === accountKey) {
+      setCategories(seriesCatalogCache.categories);
+      setSeriesList(seriesCatalogCache.series);
+      setFilteredSeries(seriesCatalogCache.series);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const [cats, series] = await Promise.all([
         getSeriesCategories(auth),
         getSeriesList(auth),
       ]);
+      seriesCatalogCache = { accountKey, categories: cats, series };
       setCategories(cats);
       setSeriesList(series);
       setFilteredSeries(series);
@@ -73,6 +97,6 @@ export function useSeries() {
     selectCategory: setSelectedCategory,
     fetchSeriesInfo,
     getEpisodeUrl,
-    refresh: loadData,
+    refresh: () => loadData(true),
   };
 }

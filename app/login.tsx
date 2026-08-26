@@ -131,7 +131,7 @@ export default function LoginScreen() {
       >
         {/* Background */}
         <Image
-          source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/8vq2Gk6pf9iimh4crADS5c/114D4170-861D-43FA-965D-725C740FA5FC.png' }}
+          source={require('@/assets/images/icon.png')}
           style={styles.bgImage}
           contentFit="cover"
           blurRadius={12}
@@ -141,7 +141,7 @@ export default function LoginScreen() {
         {/* Logo */}
         <Pressable onPress={handleLogoTap} style={styles.logoWrap}>
           <Image
-            source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/8vq2Gk6pf9iimh4crADS5c/114D4170-861D-43FA-965D-725C740FA5FC.png' }}
+            source={require('@/assets/images/icon.png')}
             style={[styles.logo, isTV && styles.logoTV]}
             contentFit="contain"
           />

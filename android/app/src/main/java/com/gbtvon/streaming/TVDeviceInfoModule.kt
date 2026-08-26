@@ -8,6 +8,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.uimanager.UIManagerHelper
 
 /**
  * Reports whether this is a remote-driven television device.
@@ -54,6 +55,26 @@ class TVDeviceInfoModule(
     fun setPlayerRemoteKeysEnabled(enabled: Boolean) {
         val activity = currentActivity as? MainActivity ?: return
         activity.runOnUiThread { activity.setPlayerRemoteKeysEnabled(enabled) }
+    }
+
+    /**
+     * Adds the blue focus frame only to a control rendered inside the custom
+     * TV search keyboard Modal. Modal windows are separate from MainActivity's
+     * decor view, so the main focus overlay cannot draw over them.
+     */
+    @ReactMethod
+    fun attachModalFocusIndicator(viewTag: Int) {
+        reactApplicationContext.runOnUiQueueThread {
+            try {
+                val uiManager = UIManagerHelper.getUIManagerForReactTag(reactApplicationContext, viewTag)
+                    ?: return@runOnUiQueueThread
+                val view = uiManager.resolveView(viewTag) ?: return@runOnUiQueueThread
+                ModalFocusIndicator.attachTo(view)
+            } catch (_: Exception) {
+                // The keyboard still navigates with the native Android focus
+                // system if the view is being unmounted during this call.
+            }
+        }
     }
 
     /**

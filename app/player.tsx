@@ -25,7 +25,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '@/hooks/useAuth';
-import { getLiveStreamUrl, getLiveStreams, getShortEpg, EpgProgram, epgTimeLabel } from '@/services/xtreamApi';
+import {
+  getLiveStreamUrl,
+  getLiveStreams,
+  getShortEpg,
+  getSeriesEpisodeUrl,
+  getSeriesInfo,
+  EpgProgram,
+  Episode,
+  epgTimeLabel,
+} from '@/services/xtreamApi';
 import { saveProgress, addToHistory, getProgress } from '@/services/favoritesService';
 import { IS_TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
@@ -96,6 +105,15 @@ export default function PlayerScreen() {
   const showControlsRef = useRef<() => void>(() => {});
   const savePlaybackProgressRef = useRef<() => void>(() => {});
   const hideControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // expo-video dispatches Android seeks asynchronously. Coalescing rapid
+  // D-pad presses prevents a queue of stale seeks from leaving VOD paused.
+  const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSeekTargetRef = useRef<number | null>(null);
+  const resumeAfterSeekRef = useRef(false);
+  // `playToEnd` can be emitted more than once by a device while the source
+  // is being released. This guard guarantees just one episode transition.
+  const episodeAdvanceStartedRef = useRef(false);
+  const nextEpisodeRef = useRef<Episode | null | undefined>(undefined);
 
   // Controls auto-hide
   const controlsOpacity = useRef(new Animated.Value(1)).current;
@@ -139,8 +157,11 @@ export default function PlayerScreen() {
     return () => sub?.remove?.();
   }, [player]);
 
-  // Poll current time (no currentTime event in expo-video)
+  // Poll current time (no currentTime event in expo-video). Reading this
+  // property blocks briefly on Android, so it is only needed for VOD and at
+  // a calm interval; live playback has no progress UI to update.
   useEffect(() => {
+    if (isLive) return;
     const interval = setInterval(() => {
       try {
         const ct = (player as any).currentTime ?? 0;
@@ -150,9 +171,9 @@ export default function PlayerScreen() {
         currentTimeRef.current = ct;
         durationRef.current = dur;
       } catch {}
-    }, 500);
+    }, 800);
     return () => clearInterval(interval);
-  }, [player]);
+  }, [player, isLive]);
 
   // Restore a movie/episode from either the route or the persisted position.
   // Waiting for a real duration prevents seeking before expo-video is ready.
@@ -195,19 +216,50 @@ export default function PlayerScreen() {
 
   // ── Seek & play/pause ──────────────────────────────────────────────────
   function seekTo(t: number) {
-    try {
-      const clamp = Math.max(0, duration > 0 ? Math.min(t, duration - 1) : t);
-      const video = player as any;
-      // Assigning the absolute time is reliable even after several rapid
-      // D-pad presses; seekBy alone can queue stale relative seeks.
-      video.currentTime = clamp;
-      currentTimeRef.current = clamp;
-      setCurrentTime(clamp);
-    } catch {
-      try { player.seekBy(t - currentTimeRef.current); } catch {}
+    if (isLive) return;
+
+    const knownDuration = Number((player as any).duration) || durationRef.current || duration;
+    const target = Math.max(0, knownDuration > 0 ? Math.min(t, Math.max(0, knownDuration - 1)) : t);
+
+    // Update the progress UI immediately, while native playback receives one
+    // final seek after the user finishes a rapid Left/Right sequence.
+    if (pendingSeekTargetRef.current === null) {
+      resumeAfterSeekRef.current = isPlayingRef.current;
     }
+    pendingSeekTargetRef.current = target;
+    currentTimeRef.current = target;
+    setCurrentTime(target);
+
+    if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+    seekTimerRef.current = setTimeout(() => {
+      const finalTarget = pendingSeekTargetRef.current;
+      const shouldResume = resumeAfterSeekRef.current;
+      pendingSeekTargetRef.current = null;
+      resumeAfterSeekRef.current = false;
+      seekTimerRef.current = null;
+      if (finalTarget === null) return;
+
+      try {
+        (player as any).currentTime = finalTarget;
+        // Android's ExoPlayer can clear playWhenReady while changing a VOD
+        // source position. Restore it only when playback was already active;
+        // a video deliberately paused by the user remains paused.
+        if (shouldResume) {
+          setTimeout(() => {
+            try { player.play(); } catch {}
+          }, 120);
+        }
+      } catch {
+        // The player was released while a seek was pending (for example,
+        // when leaving the screen). There is nothing left to seek safely.
+      }
+    }, 140);
     showControlsNow();
   }
+
+  useEffect(() => () => {
+    if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+  }, []);
 
   function togglePlay() {
     try {
@@ -256,6 +308,89 @@ export default function PlayerScreen() {
     savePlaybackProgressRef.current = savePlaybackProgress;
   }, [savePlaybackProgress]);
 
+  // ── Series: automatic next episode ────────────────────────────────────
+  // Episode data is intentionally resolved here instead of passing a large
+  // serialized list through navigation. The player stays self-contained and
+  // always respects the provider's current episode order.
+  const resolveNextEpisode = useCallback(async (): Promise<Episode | null> => {
+    if (type !== 'episode' || !auth || !seriesId || !contentId) return null;
+    if (nextEpisodeRef.current !== undefined) return nextEpisodeRef.current;
+
+    try {
+      const info = await getSeriesInfo(auth, Number(seriesId));
+      if (!info?.episodes) {
+        nextEpisodeRef.current = null;
+        return null;
+      }
+
+      const orderedEpisodes = Object.keys(info.episodes)
+        .sort((a, b) => Number(a) - Number(b))
+        .flatMap(season => [...(info.episodes[season] || [])]
+          .sort((a, b) => Number(a.episode_num) - Number(b.episode_num)));
+      const currentIndex = orderedEpisodes.findIndex(episode => String(episode.id) === String(contentId));
+      const next = currentIndex >= 0 ? orderedEpisodes[currentIndex + 1] ?? null : null;
+      nextEpisodeRef.current = next;
+      return next;
+    } catch {
+      // A temporary catalog/network failure must never interrupt the ending
+      // screen. The current episode simply remains available to replay.
+      nextEpisodeRef.current = null;
+      return null;
+    }
+  }, [auth, contentId, seriesId, type]);
+
+  useEffect(() => {
+    episodeAdvanceStartedRef.current = false;
+    nextEpisodeRef.current = undefined;
+    if (type === 'episode') void resolveNextEpisode();
+  }, [contentId, resolveNextEpisode, type]);
+
+  const playNextEpisode = useCallback(async () => {
+    if (type !== 'episode' || !auth || episodeAdvanceStartedRef.current) return;
+    episodeAdvanceStartedRef.current = true;
+
+    // Persist at the end before navigating so the current episode becomes
+    // completed even if the next source takes a moment to load.
+    savePlaybackProgressRef.current();
+    const next = await resolveNextEpisode();
+    if (!next) {
+      episodeAdvanceStartedRef.current = false;
+      return;
+    }
+
+    const nextUrl = getSeriesEpisodeUrl(
+      auth,
+      next.id,
+      next.container_extension || 'mp4',
+      next.direct_source
+    );
+    if (!nextUrl) {
+      episodeAdvanceStartedRef.current = false;
+      return;
+    }
+
+    try { player.pause(); } catch {}
+    router.replace({
+      pathname: '/player',
+      params: {
+        url: nextUrl,
+        title: `${seriesName || 'Série'} - T${next.season}:E${next.episode_num} ${next.title || ''}`.trim(),
+        type: 'episode',
+        poster: next.info?.movie_image || poster,
+        contentId: next.id,
+        seriesId,
+        seriesName,
+      },
+    });
+  }, [auth, player, poster, resolveNextEpisode, router, seriesId, seriesName, type]);
+
+  useEffect(() => {
+    const sub = player.addListener('playToEnd', () => {
+      void playNextEpisode();
+    });
+    return () => sub?.remove?.();
+  }, [player, playNextEpisode]);
+
   useEffect(() => {
     if (isLive || !contentId) return;
     const interval = setInterval(savePlaybackProgress, 5000);
@@ -296,12 +431,16 @@ export default function PlayerScreen() {
   const [browserChannelIndex, setBrowserChannelIndex] = useState(0);
   const [activeQualityStreamId, setActiveQualityStreamId] = useState<number | null>(null);
   const [qualityPanelVisible, setQualityPanelVisible] = useState(false);
+  // Incrementing this recreates exactly one native video surface after a live
+  // stream is released. It is intentionally not navigation state.
+  const [liveSurfaceVersion, setLiveSurfaceVersion] = useState(0);
   const channelListRef = useRef<FlatList>(null);
   const browserChannelItemRefs = useRef<Record<number, any>>({});
   const channelBrowserVisibleRef = useRef(false);
   const currentChannelIndexRef = useRef(0);
   const browserChannelIndexRef = useRef(0);
   const channelChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveSurfaceReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qualityPanelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qualityPanelVisibleRef = useRef(false);
   const channelChangeGenerationRef = useRef(0);
@@ -402,16 +541,24 @@ export default function PlayerScreen() {
     const changeGeneration = ++channelChangeGenerationRef.current;
     setIsBuffering(true);
     if (channelChangeTimerRef.current) clearTimeout(channelChangeTimerRef.current);
+    if (liveSurfaceReleaseTimerRef.current) clearTimeout(liveSurfaceReleaseTimerRef.current);
     channelChangeTimerRef.current = setTimeout(() => {
       if (changeGeneration !== channelChangeGenerationRef.current) return;
-      // Releasing the old source before attaching the next one prevents two
-      // streams from continuing at once on Android TV hardware.
+      // Source release and source attach cannot occur in the same Android
+      // frame: some TV devices briefly keep both decoded frames visible.
+      // First clear the old source, then recreate the *same* player surface,
+      // and finally attach the new quality after the release is complete.
       try { player.pause(); } catch {}
       try { player.replace(null); } catch {}
-      try {
-        player.replace({ uri: getLiveStreamUrl(auth, streamId) });
-        player.play();
-      } catch {}
+      setLiveSurfaceVersion(version => version + 1);
+
+      liveSurfaceReleaseTimerRef.current = setTimeout(() => {
+        if (changeGeneration !== channelChangeGenerationRef.current) return;
+        try {
+          player.replace({ uri: getLiveStreamUrl(auth, streamId) });
+          player.play();
+        } catch {}
+      }, 90);
     }, delay);
   }
 
@@ -488,6 +635,7 @@ export default function PlayerScreen() {
 
   useEffect(() => () => {
     if (channelChangeTimerRef.current) clearTimeout(channelChangeTimerRef.current);
+    if (liveSurfaceReleaseTimerRef.current) clearTimeout(liveSurfaceReleaseTimerRef.current);
     if (qualityPanelTimerRef.current) clearTimeout(qualityPanelTimerRef.current);
   }, []);
 
@@ -668,9 +816,14 @@ export default function PlayerScreen() {
         }}
       >
         <VideoView
+          key={isLive ? `live-surface-${liveSurfaceVersion}` : 'vod-surface'}
           player={player}
           style={StyleSheet.absoluteFill}
-          contentFit="contain"
+          // Every live variant uses the same full-screen surface. This avoids
+          // an SD/HD stream appearing as a smaller "screen inside a screen"
+          // when its encoded frame size differs from the previous quality.
+          contentFit={isLive ? 'cover' : 'contain'}
+          surfaceType="surfaceView"
           allowsFullscreen={false}
           allowsPictureInPicture={false}
           nativeControls={false}

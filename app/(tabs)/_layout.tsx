@@ -7,6 +7,7 @@
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Pressable, Platform, BackHandler } from 'react-native';
+import { Image } from 'expo-image';
 import TVFocusable from '@/components/ui/TVFocusable';
 import DevDPad from '@/components/ui/DevDPad';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -154,9 +155,7 @@ export default function TabLayout() {
       ]}>
         {/* Logo at top */}
         <View style={styles.sidebarLogo}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>GB</Text>
-          </View>
+          <Image source={require('@/assets/images/icon.png')} style={styles.logoImage} contentFit="contain" />
         </View>
 
         <View style={{ flex: 1 }} />
@@ -216,19 +215,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
-  logoCircle: {
+  logoImage: {
     width: IS_TV ? 48 : 38,
     height: IS_TV ? 48 : 38,
     borderRadius: IS_TV ? 14 : 11,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logoText: {
-    color: '#fff',
-    fontSize: IS_TV ? 16 : 13,
-    fontWeight: '900',
-    letterSpacing: 0.5,
   },
   navItems: {
     width: '100%',

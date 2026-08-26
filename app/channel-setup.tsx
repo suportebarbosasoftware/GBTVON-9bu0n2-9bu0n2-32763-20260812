@@ -168,7 +168,7 @@ export default function ChannelSetupScreen() {
     return (
       <View style={styles.loadingScreen}>
         <Image
-          source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/GEQj7h9Nsh3WdBFtjxD2zQ/IMG_7275.jpeg' }}
+          source={require('@/assets/images/icon.png')}
           style={styles.loadingLogo}
           contentFit="contain"
         />
@@ -183,7 +183,7 @@ export default function ChannelSetupScreen() {
       {/* HEADER */}
       <View style={styles.header}>
         <Image
-          source={{ uri: 'https://cdn-ai.onspace.ai/onspace/files/GEQj7h9Nsh3WdBFtjxD2zQ/IMG_7275.jpeg' }}
+          source={require('@/assets/images/icon.png')}
           style={styles.headerLogo}
           contentFit="contain"
         />
