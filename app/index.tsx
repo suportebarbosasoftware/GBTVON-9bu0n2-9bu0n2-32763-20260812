@@ -1,48 +1,23 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, ActivityIndicator } from 'react-native';
 import { Redirect } from 'expo-router';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { Image } from 'expo-image';
 import { useAuth } from '@/hooks/useAuth';
 import { isSetupDone } from '@/services/channelSetupService';
+import { Colors } from '@/constants/theme';
 
 export default function SplashScreen() {
   const { isAuthenticated, isLoading, activationStatus } = useAuth();
-  const [introFinished, setIntroFinished] = useState(false);
-  const introPlayer = useVideoPlayer(require('@/assets/images/intro.mp4'), player => {
-    player.loop = false;
-    player.play();
-  });
 
-  useEffect(() => {
-    const completed = introPlayer.addListener('playToEnd', () => setIntroFinished(true));
-    // A malformed media file must never prevent the user from entering the app.
-    const failed = introPlayer.addListener('statusChange', ({ status }) => {
-      if (status === 'error') setIntroFinished(true);
-    });
-    const fallback = setTimeout(() => setIntroFinished(true), 20_000);
-
-    return () => {
-      completed.remove();
-      failed.remove();
-      clearTimeout(fallback);
-    };
-  }, [introPlayer]);
-
-  if (!introFinished || isLoading) {
+  if (isLoading) {
     return (
       <View style={styles.splash}>
-        <VideoView
-          player={introPlayer}
-          style={StyleSheet.absoluteFill}
-          contentFit="cover"
-          // The intro is a short composited animation. TextureView avoids the
-          // muted-looking SurfaceView composition seen on some Android TVs.
-          surfaceType="textureView"
-          nativeControls={false}
-          allowsFullscreen={false}
-          allowsPictureInPicture={false}
-          pointerEvents="none"
+        <Image
+          source={require('@/assets/images/icon.png')}
+          style={styles.logo}
+          contentFit="contain"
         />
+        <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 24 }} />
       </View>
     );
   }
@@ -68,10 +43,18 @@ function SetupChecker() {
     });
   }, []);
 
-  if (!checked) return (
-    <View style={styles.splash}>
-    </View>
-  );
+  if (!checked) {
+    return (
+      <View style={styles.splash}>
+        <Image
+          source={require('@/assets/images/icon.png')}
+          style={styles.logo}
+          contentFit="contain"
+        />
+        <ActivityIndicator color={Colors.primary} size="large" style={{ marginTop: 24 }} />
+      </View>
+    );
+  }
 
   if (needsSetup) return <Redirect href="/channel-setup" />;
   return <Redirect href="/(tabs)" />;
@@ -81,5 +64,12 @@ const styles = StyleSheet.create({
   splash: {
     flex: 1,
     backgroundColor: '#000',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logo: {
+    width: 120,
+    height: 120,
+    borderRadius: 28,
   },
 });
