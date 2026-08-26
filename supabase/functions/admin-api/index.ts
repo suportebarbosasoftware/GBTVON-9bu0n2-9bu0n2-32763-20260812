@@ -444,6 +444,55 @@ Deno.serve(async (req) => {
       return json({ success: true, new_expiry: newExpiry, credit_cost: creditCost });
     }
 
+    // ── Rep: Change device source (no credit cost) ─────────────────────────
+    if (action === 'changeRepDeviceSource') {
+      const { deviceId, repId, repPassword, sourceId } = body;
+      if (!await validateRep(repId, repPassword)) return authError();
+      if (!deviceId || !sourceId) throw new Error('Dados incompletos');
+
+      const { data: source } = await supabase
+        .from('sources')
+        .select('*')
+        .eq('id', sourceId)
+        .eq('rep_id', repId)
+        .maybeSingle();
+      if (!source) throw new Error('Fonte não encontrada ou não pertence a este representante');
+
+      // Find or create a matching plan for the new source
+      let planId: string | null = null;
+      const { data: existingPlan } = await supabase
+        .from('plans')
+        .select('id')
+        .eq('server_url', source.server_url)
+        .eq('xtream_username', source.xtream_username)
+        .maybeSingle();
+      if (existingPlan) {
+        planId = existingPlan.id;
+      } else {
+        const { data: newPlan } = await supabase
+          .from('plans')
+          .insert({
+            name: source.name,
+            server_url: source.server_url,
+            xtream_username: source.xtream_username,
+            xtream_password: source.xtream_password,
+            max_macs: source.max_connections,
+          })
+          .select('id')
+          .single();
+        planId = newPlan?.id ?? null;
+      }
+
+      const { error } = await supabase.from('devices').update({
+        source_id: sourceId,
+        plan_id: planId,
+        updated_at: new Date().toISOString(),
+      }).eq('id', deviceId).eq('rep_id', repId);
+      if (error) throw error;
+
+      return json({ success: true, source_name: source.name });
+    }
+
     if (action === 'lookupDeviceByMac') {
       const { mac, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();

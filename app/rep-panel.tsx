@@ -16,7 +16,7 @@ import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
   repLogin, getRepDevices, getRepSources, activateRepDevice, activateRepTest,
   deactivateRepDevice, blockRepDevice, unblockRepDevice, deleteRepDevice, renewRepDevice,
-  lookupDeviceByMac,
+  changeRepDeviceSource, lookupDeviceByMac,
   Representative, Source, RepDevice,
 } from '@/services/repApiService';
 
@@ -117,6 +117,11 @@ export default function RepPanelScreen() {
   // Block modal
   const [blockModal, setBlockModal] = useState(false);
   const [blockReason, setBlockReason] = useState('');
+
+  // Edit source modal
+  const [editSourceModal, setEditSourceModal] = useState(false);
+  const [editSourceId, setEditSourceId] = useState('');
+  const [editSourceLoading, setEditSourceLoading] = useState(false);
 
   // Renew modal
   const [renewModal, setRenewModal] = useState(false);
@@ -355,6 +360,19 @@ export default function RepPanelScreen() {
       Alert.alert('Renovado!', `MAC renovado por mais ${daysNum} dias.`);
     } catch (e: any) { Alert.alert('Erro', e.message); }
     setRenewLoading(false);
+  }
+
+  async function handleChangeSource() {
+    if (!selectedDevice || !editSourceId) return;
+    setEditSourceLoading(true);
+    try {
+      const result = await changeRepDeviceSource(selectedDevice.id, editSourceId);
+      setEditSourceModal(false);
+      setDetailModal(false);
+      await loadData(false);
+      Alert.alert('Fonte alterada!', `Dispositivo migrado para a fonte "${result.source_name}" com sucesso.`);
+    } catch (e: any) { Alert.alert('Erro', e.message); }
+    setEditSourceLoading(false);
   }
 
   async function handleUnblock() {
@@ -1041,19 +1059,34 @@ export default function RepPanelScreen() {
                       </View>
                     )}
 
-                    {/* Renew button */}
-                    <Pressable
-                      style={[styles.renewBtn, actionLoading && { opacity: 0.5 }]}
-                      onPress={() => { setRenewDays('30'); setRenewModal(true); }}
-                      disabled={actionLoading}
-                    >
-                      <Ionicons name="refresh-circle-outline" size={20} color="#fff" />
-                      <Text style={styles.renewBtnText}> Renovar Acesso</Text>
-                      <View style={styles.renewCreditBadge}>
-                        <Ionicons name="wallet-outline" size={11} color="#FFD700" />
-                        <Text style={styles.renewCreditBadgeText}> {rep?.credits ?? 0} cr.</Text>
-                      </View>
-                    </Pressable>
+                    {/* Action row: Renew + Edit Source */}
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 16, marginBottom: 4 }}>
+                      <Pressable
+                        style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0 }, actionLoading && { opacity: 0.5 }]}
+                        onPress={() => { setRenewDays('30'); setRenewModal(true); }}
+                        disabled={actionLoading}
+                      >
+                        <Ionicons name="refresh-circle-outline" size={18} color="#fff" />
+                        <Text style={[styles.renewBtnText, { fontSize: 13 }]}> Renovar</Text>
+                        <View style={styles.renewCreditBadge}>
+                          <Ionicons name="wallet-outline" size={11} color="#FFD700" />
+                          <Text style={styles.renewCreditBadgeText}> {rep?.credits ?? 0}</Text>
+                        </View>
+                      </Pressable>
+                      {sources.length > 1 && (
+                        <Pressable
+                          style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0, backgroundColor: '#1565C0' }, actionLoading && { opacity: 0.5 }]}
+                          onPress={() => {
+                            setEditSourceId(selectedDevice?.source_id ?? '');
+                            setEditSourceModal(true);
+                          }}
+                          disabled={actionLoading}
+                        >
+                          <Ionicons name="swap-horizontal-outline" size={18} color="#fff" />
+                          <Text style={[styles.renewBtnText, { fontSize: 13 }]}> Trocar Fonte</Text>
+                        </Pressable>
+                      )}
+                    </View>
 
                     {/* Current content (what client is watching) */}
                     {selectedDevice.current_content ? (
@@ -1196,6 +1229,91 @@ export default function RepPanelScreen() {
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── EDIT SOURCE MODAL ── */}
+      <Modal visible={editSourceModal} transparent animationType="fade" onRequestClose={() => !editSourceLoading && setEditSourceModal(false)}>
+        <View style={[styles.modalBackdrop, { justifyContent: 'center' }]}>
+          <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, paddingBottom: 24, borderColor: 'rgba(21,101,192,0.4)' }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Trocar Fonte</Text>
+            {selectedDevice && (
+              <View style={styles.renewDeviceInfo}>
+                <Ionicons name="person-circle-outline" size={13} color={Colors.textMuted} />
+                <Text style={styles.renewDeviceInfoText} numberOfLines={1}>
+                  {selectedDevice.client_name || selectedDevice.mac_address}
+                </Text>
+              </View>
+            )}
+            {/* Current source info */}
+            {selectedDevice?.sources?.name && (
+              <View style={[styles.renewCurrentExpiry, { backgroundColor: 'rgba(21,101,192,0.08)', borderColor: 'rgba(21,101,192,0.25)' }]}>
+                <Ionicons name="server-outline" size={13} color="#42A5F5" />
+                <Text style={[styles.renewCurrentExpiryText, { color: '#42A5F5' }]}>
+                  Fonte atual: {selectedDevice.sources.name}
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Selecione a nova fonte *</Text>
+            {sources.map(s => {
+              const isSelected = editSourceId === s.id;
+              const isCurrent = selectedDevice?.source_id === s.id;
+              return (
+                <Pressable
+                  key={s.id}
+                  style={[
+                    styles.editSourceRow,
+                    isSelected && styles.editSourceRowActive,
+                    isCurrent && styles.editSourceRowCurrent,
+                  ]}
+                  onPress={() => setEditSourceId(s.id)}
+                  disabled={isCurrent}
+                >
+                  <Ionicons
+                    name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={isSelected ? Colors.primary : Colors.textMuted}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.editSourceName, isSelected && { color: '#fff' }]}>
+                      {s.name}{isCurrent ? ' (atual)' : ''}
+                    </Text>
+                    <Text style={styles.editSourceMeta}>
+                      {s.active_macs ?? 0}/{s.max_connections} MACs  •  {s.active ? 'Ativa' : 'Inativa'}
+                    </Text>
+                  </View>
+                  {isSelected && !isCurrent && (
+                    <View style={styles.editSourceSelectedBadge}>
+                      <Text style={styles.editSourceSelectedText}>Selecionada</Text>
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
+            <View style={[styles.modalActions, { marginTop: 16 }]}>
+              <Pressable
+                style={[styles.modalActionBtn, { backgroundColor: 'rgba(255,255,255,0.07)', flex: 1 }]}
+                onPress={() => { if (!editSourceLoading) setEditSourceModal(false); }}
+              >
+                <Text style={[styles.modalActionText, { color: Colors.textSecondary }]}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.modalActionBtn,
+                  { flex: 1, backgroundColor: '#1565C0' },
+                  (!editSourceId || editSourceId === selectedDevice?.source_id || editSourceLoading) && { opacity: 0.5 },
+                ]}
+                onPress={handleChangeSource}
+                disabled={!editSourceId || editSourceId === selectedDevice?.source_id || editSourceLoading}
+              >
+                {editSourceLoading
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <><Ionicons name="swap-horizontal-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Confirmar</Text></>
+                }
+              </Pressable>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* ── BLOCK REASON MODAL ── */}
@@ -1394,4 +1512,20 @@ const styles = StyleSheet.create({
   reasonChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 20, backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
   reasonChipActive: { backgroundColor: 'rgba(229,0,0,0.15)', borderColor: Colors.primary },
   reasonChipText: { color: Colors.textMuted, fontSize: 11, fontWeight: '600' },
+  // Edit source modal
+  editSourceRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
+  },
+  editSourceRowActive: { backgroundColor: 'rgba(229,0,0,0.1)', borderColor: 'rgba(229,0,0,0.4)' },
+  editSourceRowCurrent: { opacity: 0.5 },
+  editSourceName: { color: Colors.textSecondary, fontSize: 13, fontWeight: '600', marginBottom: 2 },
+  editSourceMeta: { color: Colors.textMuted, fontSize: 10 },
+  editSourceSelectedBadge: {
+    backgroundColor: 'rgba(229,0,0,0.15)', borderRadius: 6,
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderWidth: 1, borderColor: 'rgba(229,0,0,0.3)',
+  },
+  editSourceSelectedText: { color: Colors.primary, fontSize: 10, fontWeight: '700' },
 });

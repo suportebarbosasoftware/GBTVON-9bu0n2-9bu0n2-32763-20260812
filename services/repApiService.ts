@@ -287,6 +287,15 @@ export async function deleteRepDevice(deviceId: string): Promise<void> {
 }
 
 /**
+ * Change the source assigned to a device — does NOT consume credits.
+ * Only sources belonging to this representative are allowed.
+ */
+export async function changeRepDeviceSource(deviceId: string, sourceId: string): Promise<{ source_name: string }> {
+  const data = await callRep('changeRepDeviceSource', { deviceId, sourceId });
+  return { source_name: data?.source_name ?? '' };
+}
+
+/**
  * Renew a device's subscription by adding `days` to its current expiry.
  * Consumes proportional credits: days/30 (e.g. 15d = 0.50 cr, 32d = 1.07 cr).
  */
