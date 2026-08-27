@@ -24,14 +24,19 @@ Deno.serve(async (req) => {
     if (action === 'update_current_content') {
       const { data } = body;
       const { mac_address, content, content_type } = data || {};
-      if (!mac_address) return json({ success: false });
-      await supabase.from('devices').update({
+      console.log('[update_current_content] mac:', mac_address, 'content:', content);
+      if (!mac_address) {
+        console.log('[update_current_content] missing mac_address');
+        return json({ success: false, error: 'mac_address required' });
+      }
+      const { data: updated, error: updateErr } = await supabase.from('devices').update({
         current_content: content || null,
         current_content_type: content_type || null,
         current_content_at: content ? new Date().toISOString() : null,
         last_seen_at: new Date().toISOString(),
-      }).eq('mac_address', mac_address);
-      return json({ success: true });
+      }).eq('mac_address', mac_address).select('id');
+      console.log('[update_current_content] updated rows:', updated?.length ?? 0, 'error:', updateErr?.message);
+      return json({ success: true, updated: updated?.length ?? 0 });
     }
 
     // ── Representative login (no admin password) ──────────────────────────────

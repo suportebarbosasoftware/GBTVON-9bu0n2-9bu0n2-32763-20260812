@@ -37,6 +37,7 @@ import {
 } from '@/services/xtreamApi';
 import { saveProgress, addToHistory, getProgress } from '@/services/favoritesService';
 import { updateCurrentContent } from '@/services/adminApiService';
+import { getDeviceId } from '@/services/deviceIdService';
 import { IS_TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import { Colors } from '@/constants/theme';
@@ -414,26 +415,36 @@ export default function PlayerScreen() {
 
   // Report current content to backend for "Assistindo" tab
   useEffect(() => {
-    if (!macAddress) return;
-    macAddressRef.current = macAddress;
-
     const contentType = isLive ? 'live' : type === 'episode' ? 'series' : 'movie';
     const contentTitle = title || 'Reproduzindo';
 
-    // Report immediately when player opens
-    void updateCurrentContent(macAddress, contentTitle, contentType);
+    // Resolve MAC: use context value or fetch directly if not yet available
+    const startReporting = async () => {
+      const mac = macAddress || await getDeviceId();
+      if (!mac) return;
+      macAddressRef.current = mac;
 
-    // Keep refreshing every 2 minutes so backend knows user is still watching
-    contentReportTimerRef.current = setInterval(() => {
-      void updateCurrentContent(macAddressRef.current!, contentTitle, contentType);
-    }, 2 * 60 * 1000);
+      // Report immediately when player opens
+      void updateCurrentContent(mac, contentTitle, contentType);
+
+      // Keep refreshing every 2 minutes so backend knows user is still watching
+      contentReportTimerRef.current = setInterval(() => {
+        if (macAddressRef.current) {
+          void updateCurrentContent(macAddressRef.current, contentTitle, contentType);
+        }
+      }, 2 * 60 * 1000);
+    };
+
+    void startReporting();
 
     return () => {
       if (contentReportTimerRef.current) clearInterval(contentReportTimerRef.current);
       // Clear content when player closes
-      void updateCurrentContent(macAddressRef.current!, null, null);
+      if (macAddressRef.current) {
+        void updateCurrentContent(macAddressRef.current, null, null);
+      }
     };
-  }, [macAddress]);
+  }, []);
 
   // Add to history when leaving
   useEffect(() => {
