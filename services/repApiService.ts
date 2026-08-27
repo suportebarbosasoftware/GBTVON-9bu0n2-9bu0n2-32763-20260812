@@ -165,6 +165,11 @@ export async function addCredits(repId: string, amount: number, description?: st
   await callAdmin('addCredits', { repId, amount, description });
 }
 
+export async function removeCredits(repId: string, amount: number, description?: string): Promise<{ new_balance: number }> {
+  const data = await callAdmin('removeCredits', { repId, amount, description });
+  return { new_balance: data?.new_balance ?? 0 };
+}
+
 export async function getCreditTransactions(repId: string): Promise<CreditTransaction[]> {
   const data = await callAdmin('getCreditTransactions', { repId });
   return data?.transactions ?? [];

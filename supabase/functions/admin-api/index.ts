@@ -592,6 +592,25 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
+    if (action === 'removeCredits') {
+      const { repId, amount, description } = body;
+      if (!amount || amount < 1) throw new Error('Quantidade inválida');
+      const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
+      if (!rep) throw new Error('Representante não encontrado');
+      const newCredits = Math.max(0, rep.credits - amount);
+      await supabase.from('representatives').update({
+        credits: newCredits,
+        updated_at: new Date().toISOString(),
+      }).eq('id', repId);
+      await supabase.from('credit_transactions').insert({
+        rep_id: repId,
+        amount: -amount,
+        type: 'consume',
+        description: description || 'Créditos removidos pelo admin',
+      });
+      return json({ success: true, new_balance: newCredits });
+    }
+
     if (action === 'getCreditTransactions') {
       const { repId } = body;
       const { data: transactions, error } = await supabase
