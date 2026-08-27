@@ -881,65 +881,53 @@ export default function AdminScreen() {
 
         {/* ── FINANCIAL ── */}
         {activeTab === 'financial' && (() => {
-          const pricedActive = devices.filter(d => d.activated && !d.blocked_reason && d.price != null && d.price > 0);
-          const noPriceActive = devices.filter(d => d.activated && !d.blocked_reason && (d.price == null || d.price === 0));
-          const totalMonthly = pricedActive.reduce((s, d) => s + (d.price ?? 0), 0);
-          const totalAnnual = totalMonthly * 12;
+          // Admin-direct only: devices without rep_id
+          const adminActive = devices.filter(d => !d.rep_id && d.activated && !d.blocked_reason);
+          const adminPriced = adminActive.filter(d => d.price != null && d.price > 0);
+          const adminNoPrice = adminActive.filter(d => !d.price || d.price <= 0);
+          const adminMonthly = adminPriced.reduce((s, d) => s + (d.price ?? 0), 0);
+          const adminAnnual = adminMonthly * 12;
 
-          // Group by rep
-          const byRep: Record<string, { repName: string; repNumber: string; devices: Device[]; total: number }> = {};
-          for (const d of pricedActive) {
-            const repKey = d.representatives ? `${d.representatives.rep_number}` : '__admin__';
-            if (!byRep[repKey]) byRep[repKey] = {
-              repName: d.representatives ? d.representatives.name : 'Admin Direto',
-              repNumber: d.representatives ? d.representatives.rep_number : '—',
-              devices: [], total: 0,
+          // Rep breakdown (separate, collapsible)
+          const repGroups: Record<string, { repName: string; repNumber: string; priced: Device[]; total: number }> = {};
+          for (const d of devices.filter(d => d.rep_id && d.activated && !d.blocked_reason && d.price != null && d.price > 0)) {
+            const key = d.representatives ? d.representatives.rep_number : d.rep_id!;
+            if (!repGroups[key]) repGroups[key] = {
+              repName: d.representatives?.name ?? '—',
+              repNumber: d.representatives?.rep_number ?? '—',
+              priced: [], total: 0,
             };
-            byRep[repKey].devices.push(d);
-            byRep[repKey].total += d.price ?? 0;
+            repGroups[key].priced.push(d);
+            repGroups[key].total += d.price ?? 0;
           }
+          const repKeys = Object.keys(repGroups);
 
           return (
             <View style={styles.section}>
-              {/* Summary cards */}
-              <Text style={styles.sectionTitle}>Resumo Financeiro</Text>
+              {/* Admin-direct summary */}
+              <Text style={styles.sectionTitle}>Meu Financeiro (Admin Direto)</Text>
+              <View style={[styles.creditsInfoCard, { marginBottom: 14, backgroundColor: 'rgba(229,0,0,0.06)', borderColor: 'rgba(229,0,0,0.2)' }]}>
+                <Ionicons name="information-circle-outline" size={14} color={Colors.primary} />
+                <Text style={[styles.planCred, { marginLeft: 8, fontSize: 11, flex: 1 }]}>
+                  Exibe apenas dispositivos ativados diretamente pelo admin (sem representante).
+                </Text>
+              </View>
               <View style={styles.statsGrid}>
-                <StatCard icon="cash" label="Mensal" value={`R$ ${totalMonthly.toFixed(2)}`} color="#4CAF50" />
-                <StatCard icon="trending-up" label="Anual" value={`R$ ${totalAnnual.toFixed(2)}`} color="#2196F3" />
-                <StatCard icon="checkmark-circle" label="Com Valor" value={String(pricedActive.length)} color="#8BC34A" />
-                <StatCard icon="alert-circle" label="Sem Valor" value={String(noPriceActive.length)} color="#FF9800" />
+                <StatCard icon="cash" label="Mensal" value={`R$ ${adminMonthly.toFixed(2)}`} color="#4CAF50" />
+                <StatCard icon="trending-up" label="Anual" value={`R$ ${adminAnnual.toFixed(2)}`} color="#2196F3" />
+                <StatCard icon="checkmark-circle" label="Com Valor" value={String(adminPriced.length)} color="#8BC34A" />
+                <StatCard icon="alert-circle" label="Sem Valor" value={String(adminNoPrice.length)} color="#FF9800" />
               </View>
 
-              {/* By rep breakdown */}
-              {Object.entries(byRep).length > 0 && (
-                <>
-                  <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Receita por Origem</Text>
-                  {Object.entries(byRep).sort((a, b) => b[1].total - a[1].total).map(([key, group]) => (
-                    <View key={key} style={[styles.planCard, { marginBottom: 8 }]}>
-                      <View style={styles.planCardHeader}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.planName}>{key === '__admin__' ? 'Admin Direto' : `#${group.repNumber} — ${group.repName}`}</Text>
-                          <Text style={styles.planServer}>{group.devices.length} MAC(s) ativo(s)</Text>
-                        </View>
-                        <View style={[styles.planMacBadge, { backgroundColor: 'rgba(76,175,80,0.12)', borderColor: 'rgba(76,175,80,0.3)' }]}>
-                          <Ionicons name="cash-outline" size={11} color="#4CAF50" />
-                          <Text style={[styles.planMacText, { color: '#4CAF50' }]}> R$ {group.total.toFixed(2)}/mês</Text>
-                        </View>
-                      </View>
-                    </View>
-                  ))}
-                </>
-              )}
-
-              {/* All priced devices list */}
-              <Text style={[styles.sectionTitle, { marginTop: 20 }]}>MACs com Valor Definido ({pricedActive.length})</Text>
-              {pricedActive.length === 0 ? (
+              {/* Admin priced devices */}
+              <Text style={[styles.sectionTitle, { marginTop: 20 }]}>MACs com Valor ({adminPriced.length})</Text>
+              {adminPriced.length === 0 ? (
                 <View style={styles.emptyState}>
                   <Ionicons name="cash-outline" size={36} color={Colors.textMuted} />
                   <Text style={styles.emptyText}>Nenhum MAC com valor definido</Text>
                   <Text style={[styles.emptyText, { fontSize: 11, marginTop: 4 }]}>Defina o valor mensal ao ativar um dispositivo</Text>
                 </View>
-              ) : pricedActive.map(d => (
+              ) : adminPriced.map(d => (
                 <Pressable key={d.id} style={styles.deviceCard} onPress={() => openDeviceModal(d)}>
                   <View style={{ flex: 1 }}>
                     <View style={styles.deviceCardHeader}>
@@ -954,17 +942,16 @@ export default function AdminScreen() {
                       </View>
                       <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} style={{ marginLeft: 4 }} />
                     </View>
-                    {d.representatives ? <View style={styles.currentContentBar}><Ionicons name="headset-outline" size={11} color="#FFD700" /><Text style={[styles.currentContentText, { color: '#FFD700' }]} numberOfLines={1}> Rep #{d.representatives.rep_number} {d.representatives.name}</Text></View> : null}
                     {d.expires_at ? <View style={styles.expiryBar}><Ionicons name="calendar-outline" size={11} color={new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50'} /><Text style={[styles.expiryBarText, { color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50' }]}>Vence: {new Date(d.expires_at).toLocaleDateString('pt-BR')}</Text></View> : null}
                   </View>
                 </Pressable>
               ))}
 
-              {/* Devices without price */}
-              {noPriceActive.length > 0 && (
+              {/* Admin no-price devices */}
+              {adminNoPrice.length > 0 && (
                 <>
-                  <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Sem Valor Definido ({noPriceActive.length})</Text>
-                  {noPriceActive.map(d => (
+                  <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Sem Valor Definido ({adminNoPrice.length})</Text>
+                  {adminNoPrice.map(d => (
                     <Pressable key={d.id} style={[styles.deviceCard, { borderColor: 'rgba(255,152,0,0.2)' }]} onPress={() => openDeviceModal(d)}>
                       <View style={{ flex: 1 }}>
                         <View style={styles.deviceCardHeader}>
@@ -973,15 +960,53 @@ export default function AdminScreen() {
                             <Text style={styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
                             <Text style={styles.deviceCardMac}>{d.mac_address}</Text>
                           </View>
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <View style={{ backgroundColor: 'rgba(255,152,0,0.12)', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: 'rgba(255,152,0,0.3)' }}>
-                              <Text style={{ color: '#FF9800', fontSize: 10, fontWeight: '700' }}>Sem valor</Text>
-                            </View>
+                          <View style={[styles.planMacBadge, { backgroundColor: 'rgba(255,152,0,0.1)', borderColor: 'rgba(255,152,0,0.3)' }]}>
+                            <Text style={[styles.planMacText, { color: '#FF9800' }]}>Sem valor</Text>
                           </View>
                           <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} style={{ marginLeft: 4 }} />
                         </View>
                       </View>
                     </Pressable>
+                  ))}
+                </>
+              )}
+
+              {/* Reps breakdown — collapsible, optional */}
+              {repKeys.length > 0 && (
+                <>
+                  <Pressable
+                    style={[styles.sourceGroupHeader, { marginTop: 24, marginBottom: 4 }]}
+                    onPress={() => setExpandedSourceReps(prev => {
+                      const next = new Set(prev);
+                      next.has('__rep_financial__') ? next.delete('__rep_financial__') : next.add('__rep_financial__');
+                      return next;
+                    })}
+                  >
+                    <View style={[styles.repGroupIcon, { width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,215,0,0.08)' }]}>
+                      <Ionicons name="people-outline" size={16} color="#FFD700" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: '#FFD700', fontSize: 13, fontWeight: '700' }}>Receita dos Representantes</Text>
+                      <Text style={{ color: Colors.textMuted, fontSize: 10 }}>
+                        {repKeys.length} representante(s) • R$ {Object.values(repGroups).reduce((s, g) => s + g.total, 0).toFixed(2)}/mês
+                      </Text>
+                    </View>
+                    <Ionicons name={expandedSourceReps.has('__rep_financial__') ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.textMuted} />
+                  </Pressable>
+
+                  {expandedSourceReps.has('__rep_financial__') && Object.entries(repGroups).sort((a, b) => b[1].total - a[1].total).map(([key, group]) => (
+                    <View key={key} style={[styles.planCard, { marginBottom: 8, borderColor: 'rgba(255,215,0,0.12)' }]}>
+                      <View style={styles.planCardHeader}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.planName}>#{group.repNumber} — {group.repName}</Text>
+                          <Text style={styles.planServer}>{group.priced.length} MAC(s) com valor</Text>
+                        </View>
+                        <View style={[styles.planMacBadge, { backgroundColor: 'rgba(255,215,0,0.1)', borderColor: 'rgba(255,215,0,0.3)' }]}>
+                          <Ionicons name="cash-outline" size={11} color="#FFD700" />
+                          <Text style={[styles.planMacText, { color: '#FFD700' }]}> R$ {group.total.toFixed(2)}/mês</Text>
+                        </View>
+                      </View>
+                    </View>
                   ))}
                 </>
               )}
@@ -1516,6 +1541,7 @@ const styles = StyleSheet.create({
   watchingMeta: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   watchingMetaText: { color: Colors.textMuted, fontSize: 10 },
   emptySubText: { color: Colors.textMuted, fontSize: 12, textAlign: 'center', marginTop: 4 },
+  creditsInfoCard: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: 'rgba(255,215,0,0.06)', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: 'rgba(255,215,0,0.2)' },
   preAuthCard: { backgroundColor: '#141414', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)', alignItems: 'center' },
   preAuthTitle: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   preAuthSubtitle: { color: Colors.textSecondary, fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 20 },
