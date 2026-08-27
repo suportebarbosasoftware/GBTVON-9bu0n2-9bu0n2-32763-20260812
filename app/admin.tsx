@@ -19,7 +19,7 @@ import {
 } from '@/services/adminApiService';
 import {
   getRepresentatives, createRepresentative, updateRepresentative, deleteRepresentative,
-  addCredits, getSources, createSource, updateSource, deleteSource, setRepAdminPassword,
+  addCredits, removeCredits, getSources, createSource, updateSource, deleteSource, setRepAdminPassword,
   Representative, Source,
 } from '@/services/repApiService';
 
@@ -129,6 +129,8 @@ export default function AdminScreen() {
   const [creditsRep, setCreditsRep] = useState<Representative | null>(null);
   const [creditsInput, setCreditsInput] = useState('');
   const [creditsLoading, setCreditsLoading] = useState(false);
+  const [creditsMode, setCreditsMode] = useState<'add' | 'remove'>('add');
+  const [creditsDescription, setCreditsDescription] = useState('');
 
   // Sources
   const [sources, setSources] = useState<Source[]>([]);
@@ -610,7 +612,7 @@ export default function AdminScreen() {
                   <Pressable style={styles.planActionBtn} onPress={() => { setEditingRep(r); setRepForm({ name: r.name, rep_number: r.rep_number, password: '', credits: String(r.credits), notes: r.notes || '' }); setRepModal(true); }}>
                     <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(255,215,0,0.3)' }]} onPress={() => { setCreditsRep(r); setCreditsInput(''); setCreditsModal(true); }}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(255,215,0,0.3)' }]} onPress={() => { setCreditsRep(r); setCreditsInput(''); setCreditsDescription(''); setCreditsMode('add'); setCreditsModal(true); }}>
                     <Ionicons name="wallet-outline" size={16} color="#FFD700" /><Text style={[styles.planActionText, { color: '#FFD700' }]}>Créditos</Text>
                   </Pressable>
                   <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir', `Excluir ${r.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteRepresentative(r.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
@@ -924,31 +926,105 @@ export default function AdminScreen() {
       </Modal>
 
       {/* ── CREDITS MODAL ── */}
-      <Modal visible={creditsModal} transparent animationType="fade" onRequestClose={() => setCreditsModal(false)}>
+      <Modal visible={creditsModal} transparent animationType="fade" onRequestClose={() => !creditsLoading && setCreditsModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdropFlex}>
           <View style={[styles.modalBackdrop, { justifyContent: 'center' }]}>
-            <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, maxHeight: '60%', paddingBottom: 20 }]}>
+            <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, maxHeight: '80%', paddingBottom: 20 }]}>
               <View style={styles.modalHandle} />
-              <Text style={styles.modalTitle}>Adicionar Créditos</Text>
-              <Text style={[styles.planCred, { textAlign: 'center', marginBottom: 16 }]}>{creditsRep?.name} — Atual: {creditsRep?.credits ?? 0} crédito(s)</Text>
-              <Text style={styles.fieldLabel}>Quantidade a adicionar</Text>
-              <View style={styles.inputWrap}><Ionicons name="wallet-outline" size={16} color="#FFD700" /><TextInput style={styles.input} placeholder="Ex: 10" placeholderTextColor={Colors.textMuted} value={creditsInput} onChangeText={setCreditsInput} keyboardType="number-pad" /></View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
+              <Text style={styles.modalTitle}>Gerenciar Créditos</Text>
+
+              {/* Rep info */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,215,0,0.07)', borderRadius: 10, padding: 12, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(255,215,0,0.2)', gap: 8 }}>
+                <Ionicons name="person-circle-outline" size={18} color="#FFD700" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>{creditsRep?.name}</Text>
+                  <Text style={{ color: Colors.textMuted, fontSize: 11 }}>Rep #{creditsRep?.rep_number}</Text>
+                </View>
+                <View style={{ alignItems: 'center', backgroundColor: 'rgba(255,215,0,0.12)', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: 'rgba(255,215,0,0.3)' }}>
+                  <Text style={{ color: '#FFD700', fontSize: 18, fontWeight: '800' }}>{creditsRep?.credits ?? 0}</Text>
+                  <Text style={{ color: Colors.textMuted, fontSize: 9, fontWeight: '600' }}>CRÉDITOS</Text>
+                </View>
+              </View>
+
+              {/* Mode toggle */}
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+                <Pressable
+                  style={[styles.planActionBtn, { flex: 1, height: 44, borderColor: creditsMode === 'add' ? 'rgba(76,175,80,0.5)' : 'rgba(255,255,255,0.1)', backgroundColor: creditsMode === 'add' ? 'rgba(76,175,80,0.12)' : 'transparent' }]}
+                  onPress={() => setCreditsMode('add')}
+                >
+                  <Ionicons name="add-circle-outline" size={16} color={creditsMode === 'add' ? '#4CAF50' : Colors.textMuted} />
+                  <Text style={[styles.planActionText, { color: creditsMode === 'add' ? '#4CAF50' : Colors.textMuted }]}>Adicionar</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.planActionBtn, { flex: 1, height: 44, borderColor: creditsMode === 'remove' ? 'rgba(244,67,54,0.5)' : 'rgba(255,255,255,0.1)', backgroundColor: creditsMode === 'remove' ? 'rgba(244,67,54,0.1)' : 'transparent' }]}
+                  onPress={() => setCreditsMode('remove')}
+                >
+                  <Ionicons name="remove-circle-outline" size={16} color={creditsMode === 'remove' ? Colors.error : Colors.textMuted} />
+                  <Text style={[styles.planActionText, { color: creditsMode === 'remove' ? Colors.error : Colors.textMuted }]}>Remover</Text>
+                </Pressable>
+              </View>
+
+              <Text style={styles.fieldLabel}>Quantidade a {creditsMode === 'add' ? 'adicionar' : 'remover'}</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="wallet-outline" size={16} color={creditsMode === 'add' ? '#4CAF50' : Colors.error} />
+                <TextInput style={styles.input} placeholder="Ex: 10" placeholderTextColor={Colors.textMuted} value={creditsInput} onChangeText={setCreditsInput} keyboardType="number-pad" />
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   {[5, 10, 20, 30, 50].map(n => <Pressable key={n} style={styles.expiryPreset} onPress={() => setCreditsInput(String(n))}><Text style={styles.expiryPresetText}>{n}</Text></Pressable>)}
                 </View>
               </ScrollView>
+
+              <Text style={styles.fieldLabel}>Descrição (opcional)</Text>
+              <View style={[styles.inputWrap, { marginBottom: 10 }]}>
+                <Ionicons name="document-text-outline" size={16} color={Colors.textMuted} />
+                <TextInput style={styles.input} placeholder={creditsMode === 'add' ? 'Ex: Bonificação mensal' : 'Ex: Estorno por inatividade'} placeholderTextColor={Colors.textMuted} value={creditsDescription} onChangeText={setCreditsDescription} />
+              </View>
+
+              {creditsInput && parseInt(creditsInput) > 0 ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: creditsMode === 'add' ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.08)', borderRadius: 8, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: creditsMode === 'add' ? 'rgba(76,175,80,0.25)' : 'rgba(244,67,54,0.25)' }}>
+                  <Ionicons name={creditsMode === 'add' ? 'trending-up-outline' : 'trending-down-outline'} size={14} color={creditsMode === 'add' ? '#4CAF50' : Colors.error} />
+                  <Text style={{ color: creditsMode === 'add' ? '#4CAF50' : Colors.error, fontSize: 12, fontWeight: '600' }}>
+                    Saldo após: {creditsMode === 'add'
+                      ? (creditsRep?.credits ?? 0) + parseInt(creditsInput)
+                      : Math.max(0, (creditsRep?.credits ?? 0) - parseInt(creditsInput))} crédito(s)
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={styles.modalActions}>
-                <Pressable style={styles.modalCancelBtn} onPress={() => setCreditsModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
-                <Pressable style={[styles.modalActionBtn, { flex: 1 }]} onPress={async () => {
-                  const amount = parseInt(creditsInput);
-                  if (!amount || amount < 1) { Alert.alert('Valor inválido'); return; }
-                  setCreditsLoading(true);
-                  try { await addCredits(creditsRep!.id, amount); setCreditsModal(false); await loadAll(true); Alert.alert('Pronto', `${amount} crédito(s) adicionados!`); }
-                  catch (e: any) { Alert.alert('Erro', e.message); }
-                  setCreditsLoading(false);
-                }} disabled={creditsLoading}>
-                  {creditsLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.modalActionText}>Adicionar</Text>}
+                <Pressable style={styles.modalCancelBtn} onPress={() => { if (!creditsLoading) setCreditsModal(false); }}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
+                <Pressable
+                  style={[styles.modalActionBtn, { flex: 1, backgroundColor: creditsMode === 'add' ? '#4CAF50' : Colors.error }, creditsLoading && { opacity: 0.6 }]}
+                  onPress={async () => {
+                    const amount = parseInt(creditsInput);
+                    if (!amount || amount < 1) { Alert.alert('Valor inválido', 'Digite uma quantidade maior que zero'); return; }
+                    if (creditsMode === 'remove' && amount > (creditsRep?.credits ?? 0)) {
+                      Alert.alert('Saldo insuficiente', `O representante tem apenas ${creditsRep?.credits ?? 0} crédito(s).`);
+                      return;
+                    }
+                    setCreditsLoading(true);
+                    try {
+                      if (creditsMode === 'add') {
+                        await addCredits(creditsRep!.id, amount, creditsDescription.trim() || undefined);
+                        Alert.alert('Pronto', `${amount} crédito(s) adicionados!`);
+                      } else {
+                        await removeCredits(creditsRep!.id, amount, creditsDescription.trim() || undefined);
+                        Alert.alert('Pronto', `${amount} crédito(s) removidos!`);
+                      }
+                      setCreditsModal(false);
+                      setCreditsInput('');
+                      setCreditsDescription('');
+                      await loadAll(true);
+                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                    setCreditsLoading(false);
+                  }}
+                  disabled={creditsLoading}
+                >
+                  {creditsLoading
+                    ? <ActivityIndicator color="#fff" size="small" />
+                    : <><Ionicons name={creditsMode === 'add' ? 'add-circle-outline' : 'remove-circle-outline'} size={16} color="#fff" /><Text style={styles.modalActionText}> {creditsMode === 'add' ? 'Adicionar' : 'Remover'}</Text></>
+                  }
                 </Pressable>
               </View>
             </View>
