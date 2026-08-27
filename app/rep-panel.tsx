@@ -16,13 +16,13 @@ import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
   repLogin, getRepDevices, getRepSources, activateRepDevice, activateRepTest,
   deactivateRepDevice, blockRepDevice, unblockRepDevice, deleteRepDevice, renewRepDevice,
-  changeRepDeviceSource, lookupDeviceByMac,
+  changeRepDeviceSource, lookupDeviceByMac, updateRepDevicePrice,
   Representative, Source, RepDevice,
 } from '@/services/repApiService';
 
 const { width } = Dimensions.get('window');
 
-type Tab = 'dashboard' | 'devices' | 'add' | 'test' | 'watching';
+type Tab = 'dashboard' | 'devices' | 'watching' | 'add' | 'test' | 'financial';
 
 function formatLastSeen(v: string | null | undefined): string {
   if (!v) return 'Nunca';
@@ -129,6 +129,11 @@ export default function RepPanelScreen() {
   const [renewModal, setRenewModal] = useState(false);
   const [renewDays, setRenewDays] = useState('30');
   const [renewLoading, setRenewLoading] = useState(false);
+
+  const [editPriceModal, setEditPriceModal] = useState(false);
+  const [editPriceDevice, setEditPriceDevice] = useState<RepDevice | null>(null);
+  const [editPriceInput, setEditPriceInput] = useState('');
+  const [editPriceLoading, setEditPriceLoading] = useState(false);
 
   // MAC lookup debounce timers
   const addMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -409,7 +414,23 @@ export default function RepPanelScreen() {
     setActionLoading(false);
   }
 
-  // ── Computed ───────────────────────────────────────────────────────────────
+  async function handleSavePrice() {
+    if (!editPriceDevice) return;
+    const price = editPriceInput.trim() ? parseFloat(editPriceInput.replace(',', '.')) : null;
+    if (editPriceInput.trim() && (isNaN(price!) || price! < 0)) {
+      Alert.alert('Valor inválido', 'Digite um valor numérico válido.');
+      return;
+    }
+    setEditPriceLoading(true);
+    try {
+      await updateRepDevicePrice(editPriceDevice.id, price);
+      setEditPriceModal(false);
+      await loadData(false);
+    } catch (e: any) { Alert.alert('Erro', e.message); }
+    setEditPriceLoading(false);
+  }
+
+  // ── Computed
   const filteredDevices = devices.filter(d => {
     const q = devicesSearch.toLowerCase();
     const matchSearch = !q ||
@@ -555,6 +576,7 @@ export default function RepPanelScreen() {
             { key: 'watching', label: 'Assistindo', icon: 'play-circle-outline' },
             { key: 'add', label: 'Ativar MAC', icon: 'add-circle-outline' },
             { key: 'test', label: 'Teste Grátis', icon: 'time-outline' },
+            { key: 'financial', label: 'Financeiro', icon: 'cash-outline' },
           ] as { key: Tab; label: string; icon: string }[]).map(tab => (
             <Pressable
               key={tab.key}
@@ -951,6 +973,88 @@ export default function RepPanelScreen() {
           </View>
         )}
 
+        {/* ── FINANCIAL ── */}
+        {activeTab === 'financial' && (() => {
+          const activeDevices2 = devices.filter(d => d.activated && !d.blocked_reason);
+          const pricedDevices = activeDevices2.filter(d => d.price != null && d.price > 0);
+          const noPriceDevices = activeDevices2.filter(d => !d.price || d.price <= 0);
+          const totalMonthly = pricedDevices.reduce((s, d) => s + (d.price ?? 0), 0);
+          const totalAnnual = totalMonthly * 12;
+          return (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Minha Receita</Text>
+              <View style={styles.statsGrid}>
+                <StatCard icon="cash" label="Mensal" value={`R$ ${totalMonthly.toFixed(2)}`} color="#4CAF50" />
+                <StatCard icon="trending-up" label="Anual" value={`R$ ${totalAnnual.toFixed(2)}`} color="#2196F3" />
+                <StatCard icon="checkmark-circle" label="Com Valor" value={String(pricedDevices.length)} color="#8BC34A" />
+                <StatCard icon="alert-circle" label="Sem Valor" value={String(noPriceDevices.length)} color="#FF9800" />
+              </View>
+              {totalMonthly > 0 && (
+                <View style={[styles.creditsInfoCard, { backgroundColor: 'rgba(76,175,80,0.07)', borderColor: 'rgba(76,175,80,0.25)', marginTop: 16 }]}>
+                  <Ionicons name="trending-up-outline" size={18} color="#4CAF50" />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={[styles.creditsInfoTitle, { color: '#4CAF50' }]}>Projeção de Receita</Text>
+                    <Text style={styles.creditsInfoText}>
+                      <Text style={{ fontWeight: '700', color: '#4CAF50' }}>R$ {totalMonthly.toFixed(2)}</Text> por mês{"\n"}
+                      <Text style={{ fontWeight: '700', color: '#2196F3' }}>R$ {totalAnnual.toFixed(2)}</Text> por ano{"\n"}
+                      Baseado nos {pricedDevices.length} MAC(s) com valor definido
+                    </Text>
+                  </View>
+                </View>
+              )}
+              <Text style={[styles.sectionTitle, { marginTop: 20 }]}>MACs com Valor ({pricedDevices.length})</Text>
+              {pricedDevices.length === 0 ? (
+                <View style={[styles.emptyState, { paddingTop: 20 }]}>
+                  <Ionicons name="cash-outline" size={36} color={Colors.textMuted} />
+                  <Text style={styles.emptyText}>Nenhum MAC com valor definido</Text>
+                  <Text style={styles.emptySubText}>Toque em editar de cada cliente para definir</Text>
+                </View>
+              ) : pricedDevices.map(d => (
+                <View key={d.id} style={styles.deviceCard}>
+                  <View style={[styles.statusDot, { backgroundColor: '#4CAF50' }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.deviceClientName} numberOfLines={1}>{d.client_name || 'Cliente sem nome'}</Text>
+                    <Text style={styles.deviceMac}>{d.mac_address}</Text>
+                    {d.expires_at ? <Text style={{ color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50', fontSize: 10, marginTop: 1 }}>Vence: {new Date(d.expires_at).toLocaleDateString('pt-BR')}</Text> : null}
+                  </View>
+                  <View style={{ alignItems: 'flex-end', marginRight: 6 }}>
+                    <Text style={{ color: '#4CAF50', fontSize: 15, fontWeight: '800' }}>R$ {(d.price ?? 0).toFixed(2)}</Text>
+                    <Text style={{ color: Colors.textMuted, fontSize: 9 }}>/mês</Text>
+                  </View>
+                  <Pressable
+                    style={{ padding: 8, backgroundColor: 'rgba(229,0,0,0.1)', borderRadius: 8, borderWidth: 1, borderColor: 'rgba(229,0,0,0.25)' }}
+                    onPress={() => { setEditPriceDevice(d); setEditPriceInput(d.price ? String(d.price) : ''); setEditPriceModal(true); }}
+                    hitSlop={4}
+                  >
+                    <Ionicons name="create-outline" size={14} color={Colors.primary} />
+                  </Pressable>
+                </View>
+              ))}
+              {noPriceDevices.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Sem Valor Definido ({noPriceDevices.length})</Text>
+                  {noPriceDevices.map(d => (
+                    <View key={d.id} style={[styles.deviceCard, { borderColor: 'rgba(255,152,0,0.2)' }]}>
+                      <View style={[styles.statusDot, { backgroundColor: '#FF9800' }]} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.deviceClientName} numberOfLines={1}>{d.client_name || 'Cliente sem nome'}</Text>
+                        <Text style={styles.deviceMac}>{d.mac_address}</Text>
+                      </View>
+                      <Pressable
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 7, backgroundColor: 'rgba(255,152,0,0.1)', borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,152,0,0.3)' }}
+                        onPress={() => { setEditPriceDevice(d); setEditPriceInput(''); setEditPriceModal(true); }}
+                      >
+                        <Ionicons name="add-circle-outline" size={14} color="#FF9800" />
+                        <Text style={{ color: '#FF9800', fontSize: 11, fontWeight: '700' }}>Definir</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </>
+              )}
+            </View>
+          );
+        })()}
+
         {/* ── TEST ── */}
         {activeTab === 'test' && (
           <View style={styles.section}>
@@ -1073,6 +1177,66 @@ export default function RepPanelScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* ── EDIT PRICE MODAL ── */}
+      <Modal visible={editPriceModal} transparent animationType="fade" onRequestClose={() => !editPriceLoading && setEditPriceModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <View style={[styles.modalBackdrop, { justifyContent: 'center' }]}>
+            <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, paddingBottom: 24 }]}>
+              <View style={styles.modalHandle} />
+              <Text style={styles.modalTitle}>Valor Mensal da Assinatura</Text>
+              {editPriceDevice && (
+                <View style={[styles.renewDeviceInfo, { marginBottom: 14 }]}>
+                  <Ionicons name="person-circle-outline" size={14} color={Colors.textMuted} />
+                  <Text style={styles.renewDeviceInfoText} numberOfLines={1}>
+                    {editPriceDevice.client_name || editPriceDevice.mac_address}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.fieldLabel}>Valor mensal cobrado (R$)</Text>
+              <View style={styles.inputWrap}>
+                <Ionicons name="cash-outline" size={16} color="#4CAF50" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ex: 29.90"
+                  placeholderTextColor={Colors.textMuted}
+                  value={editPriceInput}
+                  onChangeText={setEditPriceInput}
+                  keyboardType="decimal-pad"
+                  autoFocus
+                />
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {['19.90', '24.90', '29.90', '39.90', '49.90', '59.90'].map(v => (
+                    <Pressable key={v} style={styles.daysBtn} onPress={() => setEditPriceInput(v)}>
+                      <Text style={styles.daysBtnLabel}>R$ {v}</Text>
+                    </Pressable>
+                  ))}
+                  <Pressable style={[styles.daysBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => setEditPriceInput('')}>
+                    <Text style={[styles.daysBtnLabel, { color: Colors.error }]}>Remover</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+              <View style={styles.modalActions}>
+                <Pressable style={[styles.modalActionBtn, { backgroundColor: 'rgba(255,255,255,0.07)', flex: 1 }]} onPress={() => { if (!editPriceLoading) setEditPriceModal(false); }}>
+                  <Text style={[styles.modalActionText, { color: Colors.textSecondary }]}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#4CAF50' }, editPriceLoading && { opacity: 0.6 }]}
+                  onPress={handleSavePrice}
+                  disabled={editPriceLoading}
+                >
+                  {editPriceLoading
+                    ? <ActivityIndicator color="#fff" size="small" />
+                    : <><Ionicons name="checkmark-circle-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Salvar</Text></>
+                  }
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* ── DEVICE DETAIL MODAL ── */}
       <Modal

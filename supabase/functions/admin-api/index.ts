@@ -493,6 +493,18 @@ Deno.serve(async (req) => {
       return json({ success: true, source_name: source.name });
     }
 
+    // ── Rep: Update device price ─────────────────────────────────────────────
+    if (action === 'updateRepDevicePrice') {
+      const { deviceId, repId, repPassword, price } = body;
+      if (!await validateRep(repId, repPassword)) return authError();
+      const { error } = await supabase.from('devices').update({
+        price: price != null ? parseFloat(String(price)) : null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', deviceId).eq('rep_id', repId);
+      if (error) throw error;
+      return json({ success: true });
+    }
+
     if (action === 'lookupDeviceByMac') {
       const { mac, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
