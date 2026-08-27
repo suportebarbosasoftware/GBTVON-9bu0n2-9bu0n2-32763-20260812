@@ -170,6 +170,10 @@ export async function removeCredits(repId: string, amount: number, description?:
   return { new_balance: data?.new_balance ?? 0 };
 }
 
+export async function updateRepDevicePrice(deviceId: string, price: number | null): Promise<void> {
+  await callRep('updateRepDevicePrice', { deviceId, price });
+}
+
 export async function getCreditTransactions(repId: string): Promise<CreditTransaction[]> {
   const data = await callAdmin('getCreditTransactions', { repId });
   return data?.transactions ?? [];
