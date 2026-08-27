@@ -86,6 +86,9 @@ export default function AdminScreen() {
   const [devicesFilter, setDevicesFilter] = useState<'all' | 'active' | 'pending' | 'blocked' | 'online'>('all');
   const [devicesSearch, setDevicesSearch] = useState('');
 
+  // Block pending — open blockReasonModal only after deviceModal fully closes (Android dual-modal fix)
+  const pendingBlockRef = useRef(false);
+
   // Bulk
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -146,6 +149,15 @@ export default function AdminScreen() {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const watchingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Android fix: open blockReasonModal only after deviceModal is fully closed
+  useEffect(() => {
+    if (!deviceModal && pendingBlockRef.current) {
+      pendingBlockRef.current = false;
+      const t = setTimeout(() => setBlockReasonModal(true), 320);
+      return () => clearTimeout(t);
+    }
+  }, [deviceModal]);
 
   async function handlePasswordSubmit() {
     if (!passwordInput.trim()) { setPasswordError('Digite a senha de acesso'); return; }
@@ -1116,7 +1128,7 @@ export default function AdminScreen() {
                       {deviceActionLoading ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="checkmark-circle-outline" size={18} color="#fff" /><Text style={styles.saveBtnText}>  Salvar e Ativar</Text></>}
                     </Pressable>
                     <View style={styles.modalActions}>
-                      <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReasonInput(''); setBlockReasonModal(true); }} disabled={deviceActionLoading}><Ionicons name="ban-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Bloquear</Text></Pressable>
+                      <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReasonInput(''); pendingBlockRef.current = true; setDeviceModal(false); }} disabled={deviceActionLoading}><Ionicons name="ban-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Bloquear</Text></Pressable>
                       <Pressable style={[styles.modalActionBtn, { backgroundColor: '#FF9800' }]} onPress={handleDeactivateDevice} disabled={deviceActionLoading}><Ionicons name="pause-circle-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Desativar</Text></Pressable>
                       <Pressable style={[styles.modalActionBtn, { backgroundColor: 'rgba(244,67,54,0.15)', borderWidth: 1, borderColor: 'rgba(244,67,54,0.4)' }]} onPress={handleDeleteDevice} disabled={deviceActionLoading}><Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.modalActionText, { color: Colors.error }]}> Excluir</Text></Pressable>
                     </View>

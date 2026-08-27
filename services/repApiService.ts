@@ -83,6 +83,7 @@ export interface RepDevice {
   last_seen_at?: string | null;
   current_content?: string | null;
   current_content_type?: string | null;
+  current_content_at?: string | null;
   notes?: string | null;
   grace_period_used?: boolean;
   sources?: { name: string } | null;
