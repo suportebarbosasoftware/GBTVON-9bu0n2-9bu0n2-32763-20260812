@@ -36,6 +36,7 @@ import {
   epgTimeLabel,
 } from '@/services/xtreamApi';
 import { saveProgress, addToHistory, getProgress } from '@/services/favoritesService';
+import { updateCurrentContent } from '@/services/adminApiService';
 import { IS_TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import { Colors } from '@/constants/theme';
@@ -81,8 +82,12 @@ export default function PlayerScreen() {
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { auth } = useAuth();
+  const { auth, macAddress } = useAuth();
   const isLive = type === 'live';
+
+  // Track mac address for content reporting
+  const macAddressRef = useRef<string | null>(null);
+  const contentReportTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Player ──────────────────────────────────────────────────────────────
   const player = useVideoPlayer(url || '', p => {
@@ -406,6 +411,29 @@ export default function PlayerScreen() {
     });
     return () => subscription.remove();
   }, [isLive]);
+
+  // Report current content to backend for "Assistindo" tab
+  useEffect(() => {
+    if (!macAddress) return;
+    macAddressRef.current = macAddress;
+
+    const contentType = isLive ? 'live' : type === 'episode' ? 'series' : 'movie';
+    const contentTitle = title || 'Reproduzindo';
+
+    // Report immediately when player opens
+    void updateCurrentContent(macAddress, contentTitle, contentType);
+
+    // Keep refreshing every 2 minutes so backend knows user is still watching
+    contentReportTimerRef.current = setInterval(() => {
+      void updateCurrentContent(macAddressRef.current!, contentTitle, contentType);
+    }, 2 * 60 * 1000);
+
+    return () => {
+      if (contentReportTimerRef.current) clearInterval(contentReportTimerRef.current);
+      // Clear content when player closes
+      void updateCurrentContent(macAddressRef.current!, null, null);
+    };
+  }, [macAddress]);
 
   // Add to history when leaving
   useEffect(() => {
