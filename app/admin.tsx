@@ -138,6 +138,11 @@ export default function AdminScreen() {
   const [editingSource, setEditingSource] = useState<Source | null>(null);
   const [sourceForm, setSourceForm] = useState({ name: '', server_url: 'https://odira.sbs', xtream_username: '', xtream_password: '', max_connections: '5', rep_id: '', notes: '' });
   const [sourceFormLoading, setSourceFormLoading] = useState(false);
+  const [expandedSourceReps, setExpandedSourceReps] = useState<Set<string>>(new Set());
+
+  // Devices — rep grouping
+  // null = show rep list; string repId = show that rep's devices; 'admin' = admin direct; 'all' = show all flat
+  const [devicesRepFilter, setDevicesRepFilter] = useState<string | null>(null);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const watchingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -480,87 +485,200 @@ export default function AdminScreen() {
         )}
 
         {/* ── DEVICES ── */}
-        {activeTab === 'devices' && (
-          <View style={styles.section}>
-            <View style={styles.searchWrap}>
-              <Ionicons name="search" size={14} color={Colors.textMuted} />
-              <TextInput style={styles.searchInput} placeholder="Buscar e-mail ou MAC..." placeholderTextColor={Colors.textMuted} value={devicesSearch} onChangeText={setDevicesSearch} />
-              <Pressable onPress={toggleSelectMode} hitSlop={8} style={[styles.selectModeBtn, selectMode && styles.selectModeBtnActive]}>
-                <Ionicons name={selectMode ? 'checkmark-circle' : 'checkbox-outline'} size={18} color={selectMode ? Colors.primary : Colors.textMuted} />
-              </Pressable>
-            </View>
-            {selectMode && (
-              <View style={styles.bulkBar}>
-                <Text style={styles.bulkBarText}>{selectedIds.size} selecionado(s)</Text>
-                <Pressable onPress={selectAll} style={styles.bulkBtn}><Text style={styles.bulkBtnText}>Todos ({filteredDevices.length})</Text></Pressable>
-                <Pressable onPress={handleBulkDelete} style={[styles.bulkBtn, styles.bulkBtnDanger, selectedIds.size === 0 && { opacity: 0.4 }]} disabled={selectedIds.size === 0 || bulkDeleteLoading}>
-                  {bulkDeleteLoading ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="trash-outline" size={14} color="#fff" /><Text style={[styles.bulkBtnText, { color: '#fff' }]}> Excluir</Text></>}
-                </Pressable>
-              </View>
-            )}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              <View style={styles.filterRow}>
-                {([
-                  { key: 'all', label: `Todos (${devices.length})` },
-                  { key: 'online', label: `Online (${devices.filter(d => isOnline(d.last_seen_at)).length})` },
-                  { key: 'active', label: `Ativos (${devices.filter(d => d.activated && !d.blocked_reason).length})` },
-                  { key: 'pending', label: `Pendentes (${devices.filter(d => !d.activated && !d.blocked_reason).length})` },
-                  { key: 'blocked', label: `Bloqueados (${devices.filter(d => !!d.blocked_reason).length})` },
-                ] as const).map(f => (
-                  <Pressable key={f.key} style={[styles.filterChip, devicesFilter === f.key && styles.filterChipActive]} onPress={() => setDevicesFilter(f.key)}>
-                    <Text style={[styles.filterChipText, devicesFilter === f.key && styles.filterChipTextActive]}>{f.label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </ScrollView>
-            {devices.filter(d => !d.activated && !d.blocked_reason).length > 0 && (
-              <Pressable style={styles.deleteInactiveBtn} onPress={handleDeleteInactive}>
-                <Ionicons name="trash-outline" size={14} color={Colors.error} />
-                <Text style={styles.deleteInactiveText}>Excluir {devices.filter(d => !d.activated && !d.blocked_reason).length} inativo(s)</Text>
-              </Pressable>
-            )}
-            {filteredDevices.length === 0 ? (
-              <View style={styles.emptyState}><Ionicons name="phone-portrait-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum dispositivo encontrado</Text></View>
-            ) : filteredDevices.map(d => {
-              const isSelected = selectedIds.has(d.id);
-              return (
-                <Pressable key={d.id} style={[styles.deviceCard, isSelected && styles.deviceCardSelected]} onPress={() => selectMode ? toggleSelect(d.id) : openDeviceModal(d)} onLongPress={() => { if (!selectMode) { setSelectMode(true); toggleSelect(d.id); } }}>
-                  {selectMode && <View style={styles.checkboxWrap}><Ionicons name={isSelected ? 'checkbox' : 'square-outline'} size={20} color={isSelected ? Colors.primary : Colors.textMuted} /></View>}
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.deviceCardHeader}>
-                      <View style={[styles.statusIndicator, { backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]} />
-                      <View style={{ flex: 1 }}>
-                        {d.client_name ? <Text style={[styles.deviceCardEmail, { fontWeight: '800' }]} numberOfLines={1}>{d.client_name}</Text> : null}
-                        <Text style={d.client_name ? [styles.deviceCardMac, { color: 'rgba(255,255,255,0.6)', fontSize: 11 }] : styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
-                        <Text style={styles.deviceCardMac}>{d.mac_address}</Text>
-                      </View>
-                      <View style={styles.deviceCardRight}>
-                        <Text style={[styles.deviceCardStatus, { color: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]}>
-                          {isOnline(d.last_seen_at) ? 'ONLINE' : d.activated ? 'ATIVO' : d.blocked_reason === 'manual' ? 'BLOQUEADO' : d.blocked_reason === 'expired' ? 'EXPIRADO' : 'PENDENTE'}
-                        </Text>
-                        {d.plans ? <Text style={styles.deviceCardPlan} numberOfLines={1}>{d.plans.name}</Text> : null}
-                      </View>
-                      {!selectMode && <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />}
-                    </View>
-                    <View style={styles.deviceCardMeta}>
-                      <Text style={styles.deviceCardMetaText}>{d.platform || 'N/A'} • {d.device_name || '—'}</Text>
-                      <Text style={styles.deviceCardMetaText}>Visto: {formatLastSeen(d.last_seen_at)}</Text>
-                    </View>
-                    {d.representatives ? <View style={styles.currentContentBar}><Ionicons name="headset-outline" size={11} color="#FFD700" /><Text style={[styles.currentContentText, { color: '#FFD700' }]} numberOfLines={1}> Rep #{d.representatives.rep_number} {d.representatives.name}</Text></View> : null}
-                    {d.current_content ? <View style={styles.currentContentBar}><Ionicons name="play-circle-outline" size={11} color="#9C27B0" /><Text style={styles.currentContentText} numberOfLines={1}> {d.current_content}</Text></View> : null}
-                    {d.expires_at ? (
-                      <View style={[styles.expiryBar, new Date(d.expires_at) < new Date() ? { backgroundColor: 'rgba(229,0,0,0.08)' } : { backgroundColor: 'rgba(76,175,80,0.08)' }]}>
-                        <Ionicons name="calendar-outline" size={11} color={new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50'} />
-                        <Text style={[styles.expiryBarText, { color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50' }]}>Expira: {new Date(d.expires_at).toLocaleDateString('pt-BR')}</Text>
-                        {d.price ? <Text style={[styles.expiryBarText, { color: Colors.primary, marginLeft: 8 }]}>R$ {d.price.toFixed(2)}</Text> : null}
-                      </View>
-                    ) : null}
+        {activeTab === 'devices' && (() => {
+          // Build rep groups
+          const repGroups: { repId: string | null; repLabel: string; repNumber: string; count: number; online: number; active: number }[] = [];
+          const repMap: Record<string, { repLabel: string; repNumber: string }> = {};
+          for (const d of devices) {
+            const key = d.rep_id ?? '__admin__';
+            if (!repMap[key]) {
+              repMap[key] = {
+                repLabel: d.representatives ? `#${d.representatives.rep_number} — ${d.representatives.name}` : 'Admin Direto',
+                repNumber: d.representatives ? d.representatives.rep_number : '—',
+              };
+            }
+          }
+          const uniqueKeys = Array.from(new Set(devices.map(d => d.rep_id ?? '__admin__')));
+          for (const key of uniqueKeys) {
+            const group = devices.filter(d => (d.rep_id ?? '__admin__') === key);
+            repGroups.push({
+              repId: key === '__admin__' ? null : key,
+              repLabel: repMap[key].repLabel,
+              repNumber: repMap[key].repNumber,
+              count: group.length,
+              online: group.filter(d => isOnline(d.last_seen_at)).length,
+              active: group.filter(d => d.activated && !d.blocked_reason).length,
+            });
+          }
+          repGroups.sort((a, b) => b.count - a.count);
+
+          // Devices for current rep filter
+          const repFilteredDevices = devicesRepFilter === null
+            ? devices
+            : devicesRepFilter === '__admin__'
+              ? devices.filter(d => !d.rep_id)
+              : devices.filter(d => d.rep_id === devicesRepFilter);
+
+          const scopedFiltered = repFilteredDevices.filter(d => {
+            const matchFilter =
+              devicesFilter === 'all' ? true :
+              devicesFilter === 'active' ? (d.activated && !d.blocked_reason) :
+              devicesFilter === 'pending' ? (!d.activated && !d.blocked_reason) :
+              devicesFilter === 'blocked' ? !!d.blocked_reason :
+              devicesFilter === 'online' ? isOnline(d.last_seen_at) : true;
+            const q = devicesSearch.toLowerCase();
+            const matchSearch = !q || d.email.toLowerCase().includes(q) || d.mac_address.toLowerCase().includes(q) || (d.client_name || '').toLowerCase().includes(q);
+            return matchFilter && matchSearch;
+          });
+
+          return (
+            <View style={styles.section}>
+              {/* ── REP SELECTOR — shown when no rep is drilled into ── */}
+              {devicesRepFilter === null && !devicesSearch.trim() ? (
+                <>
+                  <Text style={styles.sectionTitle}>Filtrar por Representante</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 10, paddingHorizontal: 12, height: 40, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 8, marginBottom: 14 }}>
+                    <Ionicons name="search" size={14} color={Colors.textMuted} />
+                    <TextInput style={{ flex: 1, color: '#fff', fontSize: 13 }} placeholder="Busca rápida (e-mail / MAC)..." placeholderTextColor={Colors.textMuted} value={devicesSearch} onChangeText={setDevicesSearch} />
                   </View>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
+                  {/* All flat */}
+                  <Pressable
+                    style={[styles.repGroupCard, { borderColor: 'rgba(229,0,0,0.3)', marginBottom: 8 }]}
+                    onPress={() => setDevicesRepFilter('__all__')}
+                  >
+                    <View style={styles.repGroupIcon}><Ionicons name="apps-outline" size={20} color={Colors.primary} /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.repGroupLabel}>Todos os dispositivos</Text>
+                      <Text style={styles.repGroupMeta}>{devices.length} MACs • {devices.filter(d => isOnline(d.last_seen_at)).length} online</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                  </Pressable>
+                  {repGroups.map(g => (
+                    <Pressable
+                      key={g.repId ?? '__admin__'}
+                      style={styles.repGroupCard}
+                      onPress={() => setDevicesRepFilter(g.repId ?? '__admin__')}
+                    >
+                      <View style={[styles.repGroupIcon, { backgroundColor: g.repId ? 'rgba(255,215,0,0.08)' : 'rgba(229,0,0,0.08)' }]}>
+                        <Ionicons name={g.repId ? 'headset-outline' : 'shield-outline'} size={20} color={g.repId ? '#FFD700' : Colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.repGroupLabel}>{g.repLabel}</Text>
+                        <Text style={styles.repGroupMeta}>{g.count} MAC(s) • {g.active} ativo(s) • {g.online} online</Text>
+                      </View>
+                      <View style={[styles.planMacBadge, { backgroundColor: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)' }]}>
+                        <Text style={[styles.planMacText, { color: '#fff' }]}>{g.count}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} style={{ marginLeft: 6 }} />
+                    </Pressable>
+                  ))}
+                </>
+              ) : (
+                /* ── DRILLED-IN VIEW ── */
+                <>
+                  {/* Back + header */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 10 }}>
+                    <Pressable
+                      style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.07)', alignItems: 'center', justifyContent: 'center' }}
+                      onPress={() => { setDevicesRepFilter(null); setDevicesSearch(''); setSelectMode(false); setSelectedIds(new Set()); }}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="arrow-back" size={18} color="#fff" />
+                    </Pressable>
+                    <View style={{ flex: 1 }}>
+                      {devicesRepFilter === '__all__' ? (
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>Todos os dispositivos</Text>
+                      ) : (
+                        <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>
+                          {repGroups.find(g => (g.repId ?? '__admin__') === devicesRepFilter)?.repLabel ?? 'Dispositivos'}
+                        </Text>
+                      )}
+                      <Text style={{ color: Colors.textMuted, fontSize: 10 }}>{scopedFiltered.length} dispositivo(s)</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.searchWrap}>
+                    <Ionicons name="search" size={14} color={Colors.textMuted} />
+                    <TextInput style={styles.searchInput} placeholder="Buscar e-mail ou MAC..." placeholderTextColor={Colors.textMuted} value={devicesSearch} onChangeText={setDevicesSearch} />
+                    <Pressable onPress={toggleSelectMode} hitSlop={8} style={[styles.selectModeBtn, selectMode && styles.selectModeBtnActive]}>
+                      <Ionicons name={selectMode ? 'checkmark-circle' : 'checkbox-outline'} size={18} color={selectMode ? Colors.primary : Colors.textMuted} />
+                    </Pressable>
+                  </View>
+                  {selectMode && (
+                    <View style={styles.bulkBar}>
+                      <Text style={styles.bulkBarText}>{selectedIds.size} selecionado(s)</Text>
+                      <Pressable onPress={selectAll} style={styles.bulkBtn}><Text style={styles.bulkBtnText}>Todos ({scopedFiltered.length})</Text></Pressable>
+                      <Pressable onPress={handleBulkDelete} style={[styles.bulkBtn, styles.bulkBtnDanger, selectedIds.size === 0 && { opacity: 0.4 }]} disabled={selectedIds.size === 0 || bulkDeleteLoading}>
+                        {bulkDeleteLoading ? <ActivityIndicator color="#fff" size="small" /> : <><Ionicons name="trash-outline" size={14} color="#fff" /><Text style={[styles.bulkBtnText, { color: '#fff' }]}> Excluir</Text></>}
+                      </Pressable>
+                    </View>
+                  )}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                    <View style={styles.filterRow}>
+                      {([
+                        { key: 'all', label: `Todos (${repFilteredDevices.length})` },
+                        { key: 'online', label: `Online (${repFilteredDevices.filter(d => isOnline(d.last_seen_at)).length})` },
+                        { key: 'active', label: `Ativos (${repFilteredDevices.filter(d => d.activated && !d.blocked_reason).length})` },
+                        { key: 'pending', label: `Pendentes (${repFilteredDevices.filter(d => !d.activated && !d.blocked_reason).length})` },
+                        { key: 'blocked', label: `Bloqueados (${repFilteredDevices.filter(d => !!d.blocked_reason).length})` },
+                      ] as const).map(f => (
+                        <Pressable key={f.key} style={[styles.filterChip, devicesFilter === f.key && styles.filterChipActive]} onPress={() => setDevicesFilter(f.key)}>
+                          <Text style={[styles.filterChipText, devicesFilter === f.key && styles.filterChipTextActive]}>{f.label}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </ScrollView>
+                  {repFilteredDevices.filter(d => !d.activated && !d.blocked_reason).length > 0 && (
+                    <Pressable style={styles.deleteInactiveBtn} onPress={handleDeleteInactive}>
+                      <Ionicons name="trash-outline" size={14} color={Colors.error} />
+                      <Text style={styles.deleteInactiveText}>Excluir {repFilteredDevices.filter(d => !d.activated && !d.blocked_reason).length} inativo(s)</Text>
+                    </Pressable>
+                  )}
+                  {scopedFiltered.length === 0 ? (
+                    <View style={styles.emptyState}><Ionicons name="phone-portrait-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum dispositivo encontrado</Text></View>
+                  ) : scopedFiltered.map(d => {
+                    const isSelected = selectedIds.has(d.id);
+                    return (
+                      <Pressable key={d.id} style={[styles.deviceCard, isSelected && styles.deviceCardSelected]} onPress={() => selectMode ? toggleSelect(d.id) : openDeviceModal(d)} onLongPress={() => { if (!selectMode) { setSelectMode(true); toggleSelect(d.id); } }}>
+                        {selectMode && <View style={styles.checkboxWrap}><Ionicons name={isSelected ? 'checkbox' : 'square-outline'} size={20} color={isSelected ? Colors.primary : Colors.textMuted} /></View>}
+                        <View style={{ flex: 1 }}>
+                          <View style={styles.deviceCardHeader}>
+                            <View style={[styles.statusIndicator, { backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]} />
+                            <View style={{ flex: 1 }}>
+                              {d.client_name ? <Text style={[styles.deviceCardEmail, { fontWeight: '800' }]} numberOfLines={1}>{d.client_name}</Text> : null}
+                              <Text style={d.client_name ? [styles.deviceCardMac, { color: 'rgba(255,255,255,0.6)', fontSize: 11 }] : styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
+                              <Text style={styles.deviceCardMac}>{d.mac_address}</Text>
+                            </View>
+                            <View style={styles.deviceCardRight}>
+                              <Text style={[styles.deviceCardStatus, { color: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]}>
+                                {isOnline(d.last_seen_at) ? 'ONLINE' : d.activated ? 'ATIVO' : d.blocked_reason === 'manual' ? 'BLOQUEADO' : d.blocked_reason === 'expired' ? 'EXPIRADO' : 'PENDENTE'}
+                              </Text>
+                              {d.plans ? <Text style={styles.deviceCardPlan} numberOfLines={1}>{d.plans.name}</Text> : null}
+                            </View>
+                            {!selectMode && <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />}
+                          </View>
+                          <View style={styles.deviceCardMeta}>
+                            <Text style={styles.deviceCardMetaText}>{d.platform || 'N/A'} • {d.device_name || '—'}</Text>
+                            <Text style={styles.deviceCardMetaText}>Visto: {formatLastSeen(d.last_seen_at)}</Text>
+                          </View>
+                          {devicesRepFilter === '__all__' && d.representatives ? <View style={styles.currentContentBar}><Ionicons name="headset-outline" size={11} color="#FFD700" /><Text style={[styles.currentContentText, { color: '#FFD700' }]} numberOfLines={1}> Rep #{d.representatives.rep_number} {d.representatives.name}</Text></View> : null}
+                          {d.current_content ? <View style={styles.currentContentBar}><Ionicons name="play-circle-outline" size={11} color="#9C27B0" /><Text style={styles.currentContentText} numberOfLines={1}> {d.current_content}</Text></View> : null}
+                          {d.expires_at ? (
+                            <View style={[styles.expiryBar, new Date(d.expires_at) < new Date() ? { backgroundColor: 'rgba(229,0,0,0.08)' } : { backgroundColor: 'rgba(76,175,80,0.08)' }]}>
+                              <Ionicons name="calendar-outline" size={11} color={new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50'} />
+                              <Text style={[styles.expiryBarText, { color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50' }]}>Expira: {new Date(d.expires_at).toLocaleDateString('pt-BR')}</Text>
+                              {d.price ? <Text style={[styles.expiryBarText, { color: Colors.primary, marginLeft: 8 }]}>R$ {d.price.toFixed(2)}</Text> : null}
+                            </View>
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </>
+              )}
+            </View>
+          );
+        })()}
 
         {/* ── PLANS ── */}
         {activeTab === 'plans' && (
@@ -625,39 +743,92 @@ export default function AdminScreen() {
           </View>
         )}
 
-        {/* ── SOURCES (FONTES) ── */}
-        {activeTab === 'sources' && (
-          <View style={styles.section}>
-            <Pressable style={styles.createBtn} onPress={() => { setEditingSource(null); setSourceForm({ name: '', server_url: 'https://odira.sbs', xtream_username: '', xtream_password: '', max_connections: '5', rep_id: '', notes: '' }); setSourceModal(true); }}>
-              <Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Nova Fonte</Text>
-            </Pressable>
-            {sources.length === 0 ? (
-              <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhuma fonte criada</Text></View>
-            ) : sources.map(s => (
-              <View key={s.id} style={styles.planCard}>
-                <View style={styles.planCardHeader}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.planName}>{s.name}</Text>
-                    <Text style={styles.planServer} numberOfLines={1}>{s.server_url}</Text>
-                    {s.rep_name ? <Text style={[styles.planServer, { color: '#FFD700' }]}>Rep: {s.rep_name}</Text> : <Text style={[styles.planServer, { color: Colors.textMuted }]}>Sem representante</Text>}
+        {/* ── SOURCES (FONTES) — grouped by rep ── */}
+        {activeTab === 'sources' && (() => {
+          // Build grouped map: repKey -> { label, color, sources[] }
+          const groupMap: Record<string, { label: string; repId: string | null; color: string; sources: Source[] }> = {};
+          for (const s of sources) {
+            const key = s.rep_id ?? '__none__';
+            if (!groupMap[key]) {
+              const rep = reps.find(r => r.id === s.rep_id);
+              groupMap[key] = {
+                label: rep ? `#${rep.rep_number} — ${rep.name}` : 'Sem Representante',
+                repId: s.rep_id,
+                color: rep ? '#FFD700' : Colors.textMuted,
+                sources: [],
+              };
+            }
+            groupMap[key].sources.push(s);
+          }
+          // Sort: reps first, then unassigned
+          const groups = Object.entries(groupMap).sort(([a], [b]) => {
+            if (a === '__none__') return 1;
+            if (b === '__none__') return -1;
+            return 0;
+          });
+
+          return (
+            <View style={styles.section}>
+              <Pressable style={styles.createBtn} onPress={() => { setEditingSource(null); setSourceForm({ name: '', server_url: 'https://odira.sbs', xtream_username: '', xtream_password: '', max_connections: '5', rep_id: '', notes: '' }); setSourceModal(true); }}>
+                <Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Nova Fonte</Text>
+              </Pressable>
+              {sources.length === 0 ? (
+                <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhuma fonte criada</Text></View>
+              ) : groups.map(([key, group]) => {
+                const isExpanded = expandedSourceReps.has(key);
+                const totalMacs = group.sources.reduce((s, src) => s + (src.active_macs ?? 0), 0);
+                const totalMax = group.sources.reduce((s, src) => s + src.max_connections, 0);
+                return (
+                  <View key={key} style={{ marginBottom: 12 }}>
+                    {/* Group header — tap to expand/collapse */}
+                    <Pressable
+                      style={styles.sourceGroupHeader}
+                      onPress={() => setExpandedSourceReps(prev => {
+                        const next = new Set(prev);
+                        next.has(key) ? next.delete(key) : next.add(key);
+                        return next;
+                      })}
+                    >
+                      <View style={[styles.repGroupIcon, { backgroundColor: group.repId ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.05)', width: 34, height: 34, borderRadius: 10 }]}>
+                        <Ionicons name={group.repId ? 'headset-outline' : 'server-outline'} size={16} color={group.color} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: group.color, fontSize: 13, fontWeight: '700' }}>{group.label}</Text>
+                        <Text style={{ color: Colors.textMuted, fontSize: 10 }}>{group.sources.length} fonte(s) • {totalMacs}/{totalMax} MACs</Text>
+                      </View>
+                      <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.textMuted} />
+                    </Pressable>
+
+                    {/* Source cards — shown when expanded */}
+                    {isExpanded && group.sources.map(s => (
+                      <View key={s.id} style={[styles.planCard, { marginBottom: 8, marginTop: 4, borderColor: group.repId ? 'rgba(255,215,0,0.12)' : 'rgba(255,255,255,0.07)' }]}>
+                        <View style={styles.planCardHeader}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.planName}>{s.name}</Text>
+                            <Text style={styles.planServer} numberOfLines={1}>{s.server_url}</Text>
+                          </View>
+                          <View style={styles.planMacBadge}><Ionicons name="people-outline" size={11} color={Colors.primary} /><Text style={styles.planMacText}> {s.active_macs ?? 0}/{s.max_connections}</Text></View>
+                        </View>
+                        <View style={styles.planCardBody}>
+                          <View style={styles.planCredRow}><Ionicons name="person-outline" size={13} color={Colors.textMuted} /><Text style={styles.planCred}> {s.xtream_username}</Text></View>
+                          <View style={styles.planCredRow}><Ionicons name={s.active ? 'radio-button-on' : 'radio-button-off'} size={13} color={s.active ? '#4CAF50' : Colors.textMuted} /><Text style={[styles.planCred, { color: s.active ? '#4CAF50' : Colors.textMuted }]}> {s.active ? 'Ativa' : 'Inativa'}</Text></View>
+                        </View>
+                        <View style={styles.planCardActions}>
+                          <Pressable style={styles.planActionBtn} onPress={() => { setEditingSource(s); setSourceForm({ name: s.name, server_url: s.server_url, xtream_username: s.xtream_username, xtream_password: s.xtream_password, max_connections: String(s.max_connections), rep_id: s.rep_id || '', notes: s.notes || '' }); setSourceModal(true); }}>
+                            <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
+                          </Pressable>
+                          <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
+                            <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ))}
                   </View>
-                  <View style={styles.planMacBadge}><Ionicons name="people-outline" size={11} color={Colors.primary} /><Text style={styles.planMacText}> {s.active_macs ?? 0}/{s.max_connections}</Text></View>
-                </View>
-                <View style={styles.planCardBody}>
-                  <View style={styles.planCredRow}><Ionicons name="person-outline" size={13} color={Colors.textMuted} /><Text style={styles.planCred}> {s.xtream_username}</Text></View>
-                </View>
-                <View style={styles.planCardActions}>
-                  <Pressable style={styles.planActionBtn} onPress={() => { setEditingSource(s); setSourceForm({ name: s.name, server_url: s.server_url, xtream_username: s.xtream_username, xtream_password: s.xtream_password, max_connections: String(s.max_connections), rep_id: s.rep_id || '', notes: s.notes || '' }); setSourceModal(true); }}>
-                    <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
-                  </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
-                    <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
+                );
+              })}
+            </View>
+          );
+        })()}
 
         {/* ── NOTIFICATIONS ── */}
         {activeTab === 'notifications' && (
@@ -1289,6 +1460,11 @@ const styles = StyleSheet.create({
   filterChipTextActive: { color: Colors.primary },
   deleteInactiveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: 'rgba(244,67,54,0.08)', borderRadius: 8, borderWidth: 1, borderColor: 'rgba(244,67,54,0.2)', marginBottom: 12 },
   deleteInactiveText: { color: Colors.error, fontSize: 12, fontWeight: '600' },
+  repGroupCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#141414', borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 10 },
+  repGroupIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(229,0,0,0.08)', borderWidth: 1, borderColor: 'rgba(229,0,0,0.2)' },
+  repGroupLabel: { color: '#fff', fontSize: 14, fontWeight: '700', marginBottom: 2 },
+  repGroupMeta: { color: Colors.textMuted, fontSize: 10 },
+  sourceGroupHeader: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a1a1a', borderRadius: 10, padding: 12, marginBottom: 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', gap: 10 },
   deviceCard: { backgroundColor: '#141414', borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', overflow: 'hidden', flexDirection: 'row', alignItems: 'center' },
   deviceCardSelected: { borderColor: Colors.primary, backgroundColor: 'rgba(229,0,0,0.06)' },
   checkboxWrap: { padding: 12 },
