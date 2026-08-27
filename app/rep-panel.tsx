@@ -196,6 +196,13 @@ export default function RepPanelScreen() {
     }
   }, [loggedIn, loadData]);
 
+  // Refresh watching data when tab activates
+  useEffect(() => {
+    if (loggedIn && activeTab === 'watching') {
+      loadData(false);
+    }
+  }, [activeTab, loggedIn]);
+
   // ── MAC auto-lookup ────────────────────────────────────────────────────────
   function handleAddMacChange(mac: string) {
     setAddForm(f => ({ ...f, mac }));
@@ -902,8 +909,14 @@ export default function RepPanelScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Assistindo agora</Text>
             {(() => {
-              const watching = devices.filter(d => d.current_content && isOnline(d.last_seen_at));
-              const recentlyWatched = devices.filter(d => d.current_content && !isOnline(d.last_seen_at));
+              // "Assistindo agora": current_content definido e visto nos últimos 30 min
+              const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+              const isWatchingRecently = (d: RepDevice) =>
+                !!d.current_content &&
+                !!d.current_content_at &&
+                new Date(d.current_content_at).getTime() > thirtyMinAgo;
+              const watching = devices.filter(d => isWatchingRecently(d) && isOnline(d.last_seen_at));
+              const recentlyWatched = devices.filter(d => isWatchingRecently(d) && !isOnline(d.last_seen_at));
               if (watching.length === 0 && recentlyWatched.length === 0) {
                 return (
                   <View style={styles.emptyState}>

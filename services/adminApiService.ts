@@ -81,12 +81,14 @@ export interface WatchingDevice {
   id: string;
   email: string;
   mac_address: string;
+  client_name?: string | null;
   device_name: string | null;
   platform: string | null;
   current_content: string;
   current_content_type: string | null;
   current_content_at: string;
   last_seen_at: string | null;
+  rep_id?: string | null;
 }
 
 async function call(action: string, data?: object): Promise<any> {

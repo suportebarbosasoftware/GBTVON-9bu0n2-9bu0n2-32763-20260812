@@ -832,18 +832,18 @@ Deno.serve(async (req) => {
         supabase.from('devices').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString()),
         supabase.from('devices').select('*', { count: 'exact', head: true }).gte('last_seen_at', fiveMinAgo),
         supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).not('current_content', 'is', null).gte('current_content_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()),
+        supabase.from('devices').select('*', { count: 'exact', head: true }).not('current_content', 'is', null).gte('current_content_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()),
       ]);
       return json({ stats: { total: total || 0, active: active || 0, pending: (total || 0) - (active || 0) - (blocked || 0), blocked: blocked || 0, newToday: newToday || 0, online: online || 0, plans: plans || 0, watching: watching || 0 } });
     }
 
     if (action === 'get_watching_now') {
-      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       const { data: watching, error } = await supabase
         .from('devices')
-        .select('id, email, mac_address, device_name, platform, current_content, current_content_type, current_content_at, last_seen_at')
+        .select('id, email, mac_address, device_name, platform, current_content, current_content_type, current_content_at, last_seen_at, client_name, rep_id')
         .not('current_content', 'is', null)
-        .gte('current_content_at', tenMinAgo)
+        .gte('current_content_at', thirtyMinAgo)
         .order('current_content_at', { ascending: false });
       if (error) throw error;
       return json({ watching: watching || [] });
