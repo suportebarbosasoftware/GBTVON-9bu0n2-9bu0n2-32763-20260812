@@ -22,7 +22,7 @@ import {
 
 const { width } = Dimensions.get('window');
 
-type Tab = 'dashboard' | 'devices' | 'add' | 'test';
+type Tab = 'dashboard' | 'devices' | 'add' | 'test' | 'watching';
 
 function formatLastSeen(v: string | null | undefined): string {
   if (!v) return 'Nunca';
@@ -114,9 +114,11 @@ export default function RepPanelScreen() {
   const [selectedDevice, setSelectedDevice] = useState<RepDevice | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Block modal
+  // Block modal — open only after detailModal is fully closed
   const [blockModal, setBlockModal] = useState(false);
   const [blockReason, setBlockReason] = useState('');
+  const pendingBlockRef = useRef(false);
+  const pendingRenewRef = useRef(false);
 
   // Edit source modal
   const [editSourceModal, setEditSourceModal] = useState(false);
@@ -133,6 +135,22 @@ export default function RepPanelScreen() {
   const testMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Android fix: open block/renew modals only after detailModal fully closes
+  useEffect(() => {
+    if (!detailModal) {
+      if (pendingBlockRef.current) {
+        pendingBlockRef.current = false;
+        const t = setTimeout(() => setBlockModal(true), 320);
+        return () => clearTimeout(t);
+      }
+      if (pendingRenewRef.current) {
+        pendingRenewRef.current = false;
+        const t = setTimeout(() => setRenewModal(true), 320);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [detailModal]);
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   async function handleLogin() {
@@ -319,7 +337,6 @@ export default function RepPanelScreen() {
     setActionLoading(true);
     try {
       await blockRepDevice(selectedDevice.id, blockReason.trim() || 'Bloqueado pelo representante');
-      setDetailModal(false);
       setBlockReason('');
       await loadData(false);
     } catch (e: any) { Alert.alert('Erro', e.message); }
@@ -355,7 +372,6 @@ export default function RepPanelScreen() {
       const result = await renewRepDevice(selectedDevice.id, daysNum);
       setRep(prev => prev ? { ...prev, credits: Math.round((prev.credits - (result.credit_cost || creditCost)) * 100) / 100 } : prev);
       setRenewModal(false);
-      setDetailModal(false);
       await loadData(false);
       Alert.alert('Renovado!', `MAC renovado por mais ${daysNum} dias.`);
     } catch (e: any) { Alert.alert('Erro', e.message); }
@@ -536,6 +552,7 @@ export default function RepPanelScreen() {
           {([
             { key: 'dashboard', label: 'Painel', icon: 'grid-outline' },
             { key: 'devices', label: 'Clientes', icon: 'phone-portrait-outline' },
+            { key: 'watching', label: 'Assistindo', icon: 'play-circle-outline' },
             { key: 'add', label: 'Ativar MAC', icon: 'add-circle-outline' },
             { key: 'test', label: 'Teste Grátis', icon: 'time-outline' },
           ] as { key: Tab; label: string; icon: string }[]).map(tab => (
@@ -858,6 +875,82 @@ export default function RepPanelScreen() {
           </View>
         )}
 
+        {/* ── WATCHING / ASSISTINDO AGORA ── */}
+        {activeTab === 'watching' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Assistindo agora</Text>
+            {(() => {
+              const watching = devices.filter(d => d.current_content && isOnline(d.last_seen_at));
+              const recentlyWatched = devices.filter(d => d.current_content && !isOnline(d.last_seen_at));
+              if (watching.length === 0 && recentlyWatched.length === 0) {
+                return (
+                  <View style={styles.emptyState}>
+                    <Ionicons name="play-circle-outline" size={40} color={Colors.textMuted} />
+                    <Text style={styles.emptyText}>Nenhum cliente assistindo no momento</Text>
+                    <Text style={styles.emptySubText}>Clientes online com conteúdo aparecerão aqui</Text>
+                  </View>
+                );
+              }
+              return (
+                <View>
+                  {watching.length > 0 && (
+                    <>
+                      <View style={styles.watchingHeader}>
+                        <View style={styles.onlineDot} />
+                        <Text style={styles.watchingHeaderText}>Online agora ({watching.length})</Text>
+                      </View>
+                      {watching.map(d => (
+                        <Pressable
+                          key={d.id}
+                          style={styles.watchingCard}
+                          onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
+                        >
+                          <View style={[styles.statusDot, { backgroundColor: '#4CAF50', flexShrink: 0 }]} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.watchingClientName} numberOfLines={1}>{d.client_name || 'Cliente sem nome'}</Text>
+                            <View style={styles.watchingContentRow}>
+                              <Ionicons name="play-circle" size={12} color="#9C27B0" />
+                              <Text style={styles.watchingContent} numberOfLines={2}>{d.current_content}</Text>
+                            </View>
+                            <Text style={styles.watchingMac}>{d.mac_address}</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
+                        </Pressable>
+                      ))}
+                    </>
+                  )}
+                  {recentlyWatched.length > 0 && (
+                    <>
+                      <View style={[styles.watchingHeader, { marginTop: 16 }]}>
+                        <Ionicons name="time-outline" size={12} color={Colors.textMuted} />
+                        <Text style={[styles.watchingHeaderText, { color: Colors.textMuted }]}>Assistiram recentemente ({recentlyWatched.length})</Text>
+                      </View>
+                      {recentlyWatched.map(d => (
+                        <Pressable
+                          key={d.id}
+                          style={[styles.watchingCard, { opacity: 0.7 }]}
+                          onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
+                        >
+                          <View style={[styles.statusDot, { backgroundColor: Colors.textMuted, flexShrink: 0 }]} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.watchingClientName} numberOfLines={1}>{d.client_name || 'Cliente sem nome'}</Text>
+                            <View style={styles.watchingContentRow}>
+                              <Ionicons name="play-circle-outline" size={12} color={Colors.textMuted} />
+                              <Text style={[styles.watchingContent, { color: Colors.textMuted }]} numberOfLines={1}>{d.current_content}</Text>
+                            </View>
+                            <Text style={styles.watchingMac}>{d.mac_address} • {formatLastSeen(d.last_seen_at)}</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
+                        </Pressable>
+                      ))}
+                    </>
+                  )}
+                </View>
+              );
+            })()}
+          </View>
+        )}
+
         {/* ── TEST ── */}
         {activeTab === 'test' && (
           <View style={styles.section}>
@@ -982,7 +1075,17 @@ export default function RepPanelScreen() {
       </ScrollView>
 
       {/* ── DEVICE DETAIL MODAL ── */}
-      <Modal visible={detailModal} transparent animationType="slide" onRequestClose={() => !actionLoading && setDetailModal(false)}>
+      <Modal
+        visible={detailModal}
+        transparent
+        animationType="slide"
+        onDismiss={() => {
+          // iOS: fires after modal fully hides
+          if (pendingBlockRef.current) { pendingBlockRef.current = false; setBlockModal(true); }
+          if (pendingRenewRef.current) { pendingRenewRef.current = false; setRenewModal(true); }
+        }}
+        onRequestClose={() => !actionLoading && setDetailModal(false)}
+      >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.modalBackdrop}>
             <View style={styles.modalSheet}>
@@ -1070,7 +1173,11 @@ export default function RepPanelScreen() {
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 16, marginBottom: 4 }}>
                       <Pressable
                         style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0 }, actionLoading && { opacity: 0.5 }]}
-                        onPress={() => { setRenewDays('30'); setRenewModal(true); }}
+                        onPress={() => {
+                          setRenewDays('30');
+                          pendingRenewRef.current = true;
+                          setDetailModal(false);
+                        }}
                         disabled={actionLoading}
                       >
                         <Ionicons name="refresh-circle-outline" size={18} color="#fff" />
@@ -1085,7 +1192,7 @@ export default function RepPanelScreen() {
                         onPress={() => {
                           setEditSourceId('');
                           setDetailModal(false);
-                          setTimeout(() => setEditSourceModal(true), 300);
+                          setTimeout(() => setEditSourceModal(true), 320);
                         }}
                         disabled={actionLoading}
                       >
@@ -1117,7 +1224,15 @@ export default function RepPanelScreen() {
                           <Text style={styles.modalActionText}> Desbloquear</Text>
                         </Pressable>
                       ) : (
-                        <Pressable style={[styles.modalActionBtn, { backgroundColor: Colors.error }]} onPress={() => { setBlockReason(''); setBlockModal(true); }} disabled={actionLoading}>
+                        <Pressable
+                          style={[styles.modalActionBtn, { backgroundColor: Colors.error }]}
+                          onPress={() => {
+                            setBlockReason('');
+                            pendingBlockRef.current = true;
+                            setDetailModal(false);
+                          }}
+                          disabled={actionLoading}
+                        >
                           <Ionicons name="ban-outline" size={16} color="#fff" />
                           <Text style={styles.modalActionText}> Bloquear</Text>
                         </Pressable>
@@ -1534,4 +1649,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(229,0,0,0.3)',
   },
   editSourceSelectedText: { color: Colors.primary, fontSize: 10, fontWeight: '700' },
+  // Watching tab
+  watchingHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  watchingHeaderText: { color: '#4CAF50', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  watchingCard: { backgroundColor: '#141414', borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', flexDirection: 'row', alignItems: 'center', gap: 10 },
+  watchingClientName: { color: '#fff', fontSize: 13, fontWeight: '700', marginBottom: 3 },
+  watchingContentRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 },
+  watchingContent: { color: '#CE93D8', fontSize: 11, flex: 1 },
+  watchingMac: { color: Colors.textMuted, fontSize: 9, fontFamily: 'monospace' },
 });
