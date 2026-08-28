@@ -145,11 +145,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (silentRefreshInFlightRef.current) return;
     silentRefreshInFlightRef.current = true;
     try {
-      // 15-second timeout so it never hangs indefinitely
-      const result = await Promise.race([
+    const result = await Promise.race([
         checkActivation(email),
         new Promise<ActivationResult>((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 15000)
+          setTimeout(() => reject(new Error('timeout')), 30000)
         ),
       ]) as ActivationResult;
       // Only apply definitive results — never revoke active session on error/timeout

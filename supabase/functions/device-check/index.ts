@@ -43,11 +43,15 @@ Deno.serve(async (req) => {
       if (rep) repId = rep.id;
     }
 
+    // Normalize MAC: uppercase + colon format for consistent comparison
+    const normalizedMac = mac_address.trim().toUpperCase().replace(/[^A-F0-9]/g, '').replace(/(.{2})/g, '$1:').replace(/:$/, '');
+
     // ── Check by MAC address ──────────────────────────────────────
+    // Use separate queries instead of join to avoid slow PostgREST embed resolution
     const { data: existing } = await supabase
       .from('devices')
-      .select('*, plans(*), sources(*)')
-      .eq('mac_address', mac_address)
+      .select('*')
+      .eq('mac_address', normalizedMac)
       .maybeSingle();
 
     if (existing) {
@@ -58,7 +62,7 @@ Deno.serve(async (req) => {
       if (client_name && client_name.trim() && !existing.client_name) {
         updateData.client_name = client_name.trim();
       }
-      await supabase.from('devices').update(updateData).eq('mac_address', mac_address);
+      await supabase.from('devices').update(updateData).eq('mac_address', normalizedMac);
 
       // ── MANUALLY BLOCKED ──────────────────────────────────────
       if (existing.blocked_reason === 'manual') {
@@ -72,31 +76,48 @@ Deno.serve(async (req) => {
       }
 
       // ── ACTIVATED — via plan OR via representative source ────────
-      const hasCredentials = existing.activated && (existing.plans || existing.sources);
-      if (hasCredentials) {
+      const isActivated = existing.activated && (existing.source_id || existing.plan_id);
+      if (isActivated) {
         // Check if MAC has expired
         if (existing.expires_at && new Date(existing.expires_at) < new Date()) {
           await supabase.from('devices').update({
             activated: false,
             blocked_reason: 'expired',
             blocked_at: now,
-          }).eq('mac_address', mac_address);
+          }).eq('mac_address', normalizedMac);
 
           return new Response(JSON.stringify({
             status: 'expired',
             grace_period_used: existing.grace_period_used || false,
             price: existing.price || null,
             message: 'Assinatura expirada.',
-            mac_address,
+            mac_address: normalizedMac,
             email: normalizedEmail,
           }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
         }
 
-        // Resolve credentials: source takes priority over plan
-        const credSource = existing.sources || existing.plans;
-        const planLabel = existing.sources
-          ? existing.sources.name
-          : existing.plans?.name ?? 'Plano';
+        // Resolve credentials: source_id takes priority over plan_id
+        let credSource: any = null;
+        let planLabel = 'Plano';
+
+        if (existing.source_id) {
+          const { data: src } = await supabase.from('sources').select('*').eq('id', existing.source_id).maybeSingle();
+          if (src) { credSource = src; planLabel = src.name; }
+        }
+        if (!credSource && existing.plan_id) {
+          const { data: plan } = await supabase.from('plans').select('*').eq('id', existing.plan_id).maybeSingle();
+          if (plan) { credSource = plan; planLabel = plan.name; }
+        }
+
+        if (!credSource) {
+          // Activated but credentials missing (plan/source deleted)
+          return new Response(JSON.stringify({
+            status: 'pending',
+            message: 'Plano ou fonte não encontrado. Entre em contato com o suporte.',
+            mac_address: normalizedMac,
+            email: normalizedEmail,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
 
         // Fetch notifications
         const { data: notifications } = await supabase
@@ -115,7 +136,7 @@ Deno.serve(async (req) => {
           },
           plan_name: planLabel,
           expires_at: existing.expires_at,
-          mac_address,
+          mac_address: normalizedMac,
           email: normalizedEmail,
           grace_period_used: existing.grace_period_used || false,
           price: existing.price || null,
@@ -136,27 +157,31 @@ Deno.serve(async (req) => {
             blocked_at: null,
             grace_period_used: true,
             updated_at: now,
-          }).eq('mac_address', mac_address);
+          }).eq('mac_address', normalizedMac);
 
-          const { data: renewed } = await supabase
-            .from('devices')
-            .select('*, plans(*), sources(*)')
-            .eq('mac_address', mac_address)
-            .maybeSingle();
-
-          const renewedCred = renewed?.sources || renewed?.plans;
-          if (renewedCred) {
+          // Re-fetch credentials after grace
+          const { data: renewed } = await supabase.from('devices').select('*').eq('mac_address', normalizedMac).maybeSingle();
+          let graceCred: any = null;
+          if (renewed?.source_id) {
+            const { data: src } = await supabase.from('sources').select('*').eq('id', renewed.source_id).maybeSingle();
+            if (src) graceCred = src;
+          }
+          if (!graceCred && renewed?.plan_id) {
+            const { data: plan } = await supabase.from('plans').select('*').eq('id', renewed.plan_id).maybeSingle();
+            if (plan) graceCred = plan;
+          }
+          if (graceCred) {
             return new Response(JSON.stringify({
               status: 'activated',
               credentials: {
-                server: renewedCred.server_url,
-                username: renewedCred.xtream_username,
-                password: renewedCred.xtream_password,
+                server: graceCred.server_url,
+                username: graceCred.xtream_username,
+                password: graceCred.xtream_password,
               },
-              plan_name: renewed?.sources?.name ?? renewed?.plans?.name ?? 'Plano',
+              plan_name: graceCred.name ?? 'Plano',
               expires_at: renewed?.expires_at,
               grace_period_used: true,
-              mac_address,
+              mac_address: normalizedMac,
               email: normalizedEmail,
               notifications: [],
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -168,7 +193,7 @@ Deno.serve(async (req) => {
           grace_period_used: existing.grace_period_used || false,
           price: existing.price || null,
           message: 'Assinatura expirada.',
-          mac_address,
+          mac_address: normalizedMac,
           email: normalizedEmail,
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
@@ -177,7 +202,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({
         status: 'pending',
         message: 'Aguardando ativação pelo administrador.',
-        mac_address,
+        mac_address: normalizedMac,
         email: normalizedEmail,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
@@ -185,7 +210,7 @@ Deno.serve(async (req) => {
     // ── NEW DEVICE — register ─────────────────────────────────
     const insertData: any = {
       email: normalizedEmail,
-      mac_address,
+      mac_address: normalizedMac,
       device_name: device_name || 'Dispositivo',
       platform: platform || 'unknown',
       activated: false,
@@ -198,6 +223,16 @@ Deno.serve(async (req) => {
 
     if (insertError) {
       console.error('Insert error:', insertError);
+      // May already exist due to race — try to fetch
+      const { data: raceExisting } = await supabase.from('devices').select('*').eq('mac_address', normalizedMac).maybeSingle();
+      if (raceExisting) {
+        return new Response(JSON.stringify({
+          status: 'pending',
+          message: 'Aguardando ativação pelo administrador.',
+          mac_address: normalizedMac,
+          email: normalizedEmail,
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
       return new Response(JSON.stringify({ error: 'Erro ao registrar dispositivo.' }), {
         status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -206,7 +241,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       status: 'pending',
       message: 'Dispositivo registrado! Aguardando ativação pelo administrador.',
-      mac_address,
+      mac_address: normalizedMac,
       email: normalizedEmail,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 

@@ -5,6 +5,13 @@ import { corsHeaders } from '../_shared/cors.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 
+/** Normalize MAC to uppercase colon format XX:XX:XX:XX:XX:XX */
+function normalizeMac(mac: string): string {
+  const hex = mac.trim().toUpperCase().replace(/[^A-F0-9]/g, '');
+  if (hex.length !== 12) return mac.trim().toUpperCase(); // return as-is if unexpected length
+  return hex.match(/.{2}/g)!.join(':');
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -73,7 +80,6 @@ Deno.serve(async (req) => {
     }
 
     // ── Validate representative credentials helper ─────────────────────────────
-    // Rep actions pass repId + repPassword instead of adminPassword
     async function validateRep(repId: string, repPassword: string): Promise<boolean> {
       const { data: rep } = await supabase
         .from('representatives')
@@ -85,12 +91,11 @@ Deno.serve(async (req) => {
     }
 
     // ── Credit cost helper: proportional (days / 30), rounded to 2 decimals ──
-    // 30 days = 1.00 credit, 15 days = 0.50, 32 days = 1.07, 61 days = 2.03
     function computeCreditCost(days: number): number {
       return Math.round((days / 30) * 100) / 100;
     }
 
-    // ── Rep Panel actions (authenticated by repId + repPassword) ──────────────
+    // ── Rep Panel actions ─────────────────────────────────────────────────────
 
     if (action === 'getRepDevices') {
       const { repId, repPassword } = body;
@@ -113,7 +118,6 @@ Deno.serve(async (req) => {
         .eq('rep_id', repId)
         .eq('active', true);
       if (error) throw error;
-      // Count active MACs per source
       const withCount = await Promise.all((sources || []).map(async (s: any) => {
         const { count } = await supabase
           .from('devices')
@@ -130,6 +134,9 @@ Deno.serve(async (req) => {
       if (!await validateRep(repId, repPassword)) return authError();
       if (!repId || !mac || !sourceId || !days) throw new Error('Dados incompletos');
 
+      // Normalize MAC to uppercase colon format for consistent matching
+      const normalizedMac = normalizeMac(mac);
+
       const { data: rep } = await supabase
         .from('representatives')
         .select('credits')
@@ -137,7 +144,6 @@ Deno.serve(async (req) => {
         .single();
       if (!rep) throw new Error('Representante não encontrado');
 
-      // Proportional credit cost: e.g. 32 days = 1.07 credits
       const creditCost = computeCreditCost(parseInt(days));
       if (rep.credits < creditCost) {
         throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
@@ -184,12 +190,12 @@ Deno.serve(async (req) => {
       }
       const normalizedEmail = email
         ? email.toLowerCase().trim()
-        : `mac_${mac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
+        : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
 
       const { data: existingDev } = await supabase
         .from('devices')
         .select('id')
-        .eq('mac_address', mac)
+        .eq('mac_address', normalizedMac)
         .maybeSingle();
 
       if (existingDev) {
@@ -207,11 +213,11 @@ Deno.serve(async (req) => {
           block_reason_detail: null,
           blocked_at: null,
           updated_at: now,
-        }).eq('mac_address', mac);
+        }).eq('mac_address', normalizedMac);
       } else {
         await supabase.from('devices').insert({
           email: normalizedEmail,
-          mac_address: mac,
+          mac_address: normalizedMac,
           client_name: clientName || null,
           plan_id: planId,
           source_id: sourceId,
@@ -226,7 +232,6 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Deduct proportional credits (stored as float)
       await supabase.from('representatives').update({
         credits: rep.credits - creditCost,
         updated_at: now,
@@ -234,10 +239,10 @@ Deno.serve(async (req) => {
 
       await supabase.from('credit_transactions').insert({
         rep_id: repId,
-        amount: Math.ceil(creditCost), // integer column — store ceiling for accounting
+        amount: Math.ceil(creditCost),
         type: 'consume',
-        description: `Ativação ${parseInt(days)}d ${packageType?.toUpperCase()} — ${mac} (custo real: ${creditCost.toFixed(2)} cr.)`,
-        device_mac: mac,
+        description: `Ativação ${parseInt(days)}d ${packageType?.toUpperCase()} — ${normalizedMac} (custo real: ${creditCost.toFixed(2)} cr.)`,
+        device_mac: normalizedMac,
         days: parseInt(days),
       });
 
@@ -251,6 +256,7 @@ Deno.serve(async (req) => {
       if (!await validateRep(repId, repPassword)) return authError();
       if (!mac || !sourceId || !hours) throw new Error('Dados incompletos');
 
+      const normalizedMac = normalizeMac(mac);
       const hoursNum = Math.min(Math.max(1, parseInt(hours)), 6);
 
       const { data: source } = await supabase
@@ -288,12 +294,12 @@ Deno.serve(async (req) => {
       const expiresAt = new Date(Date.now() + hoursNum * 60 * 60 * 1000).toISOString();
       const normalizedEmail = email
         ? email.toLowerCase().trim()
-        : `mac_${mac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
+        : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
 
       const { data: existingDev } = await supabase
         .from('devices')
         .select('id')
-        .eq('mac_address', mac)
+        .eq('mac_address', normalizedMac)
         .maybeSingle();
 
       if (existingDev) {
@@ -311,11 +317,11 @@ Deno.serve(async (req) => {
           block_reason_detail: null,
           blocked_at: null,
           updated_at: now,
-        }).eq('mac_address', mac);
+        }).eq('mac_address', normalizedMac);
       } else {
         await supabase.from('devices').insert({
           email: normalizedEmail,
-          mac_address: mac,
+          mac_address: normalizedMac,
           client_name: clientName || null,
           plan_id: planId,
           source_id: sourceId,
@@ -334,8 +340,8 @@ Deno.serve(async (req) => {
         rep_id: repId,
         amount: 0,
         type: 'consume',
-        description: `Teste ${hoursNum}h — ${mac}`,
-        device_mac: mac,
+        description: `Teste ${hoursNum}h — ${normalizedMac}`,
+        device_mac: normalizedMac,
         days: 0,
       });
 
@@ -366,7 +372,6 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
-    // ── Rep: Unblock a device — NO credit cost ────────────────────────────────
     if (action === 'unblockRepDevice') {
       const { deviceId, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
@@ -389,7 +394,6 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
-    // ── Rep: Renew device subscription (proportional credits) ─────────────────
     if (action === 'renewRepDevice') {
       const { deviceId, repId, repPassword, days } = body;
       if (!await validateRep(repId, repPassword)) return authError();
@@ -449,7 +453,6 @@ Deno.serve(async (req) => {
       return json({ success: true, new_expiry: newExpiry, credit_cost: creditCost });
     }
 
-    // ── Rep: Change device source (no credit cost) ─────────────────────────
     if (action === 'changeRepDeviceSource') {
       const { deviceId, repId, repPassword, sourceId } = body;
       if (!await validateRep(repId, repPassword)) return authError();
@@ -463,7 +466,6 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (!source) throw new Error('Fonte não encontrada ou não pertence a este representante');
 
-      // Find or create a matching plan for the new source
       let planId: string | null = null;
       const { data: existingPlan } = await supabase
         .from('plans')
@@ -498,7 +500,6 @@ Deno.serve(async (req) => {
       return json({ success: true, source_name: source.name });
     }
 
-    // ── Rep: Update device price ─────────────────────────────────────────────
     if (action === 'updateRepDevicePrice') {
       const { deviceId, repId, repPassword, price } = body;
       if (!await validateRep(repId, repPassword)) return authError();
@@ -514,10 +515,11 @@ Deno.serve(async (req) => {
       const { mac, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!mac) return json({ found: false });
+      const normalizedMac = normalizeMac(mac);
       const { data: dev } = await supabase
         .from('devices')
         .select('client_name, email, mac_address')
-        .eq('mac_address', mac.trim().toUpperCase())
+        .eq('mac_address', normalizedMac)
         .maybeSingle();
       if (!dev) return json({ found: false });
       return json({ found: true, client_name: dev.client_name || '', email: dev.email || '' });
@@ -690,7 +692,6 @@ Deno.serve(async (req) => {
     // ── Existing admin device actions ─────────────────────────────────────────
 
     if (action === 'get_devices') {
-      // Include rep info so admin can see who activated the device
       const { data: devices, error } = await supabase
         .from('devices')
         .select('*, plans(id, name, server_url), representatives(rep_number, name)')
@@ -878,12 +879,13 @@ Deno.serve(async (req) => {
       const { data } = body;
       const { email, planId, macAddress } = data;
       const normalizedEmail = email.toLowerCase().trim();
+      const normalizedMac = normalizeMac(macAddress);
       const now = new Date().toISOString();
-      const { data: existing } = await supabase.from('devices').select('id').eq('mac_address', macAddress).maybeSingle();
+      const { data: existing } = await supabase.from('devices').select('id').eq('mac_address', normalizedMac).maybeSingle();
       if (existing) {
-        await supabase.from('devices').update({ email: normalizedEmail, plan_id: planId, activated: true, activated_at: now, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('mac_address', macAddress);
+        await supabase.from('devices').update({ email: normalizedEmail, plan_id: planId, activated: true, activated_at: now, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('mac_address', normalizedMac);
       } else {
-        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: macAddress, plan_id: planId, activated: true, activated_at: now, device_name: 'Pré-autorizado', platform: 'unknown', last_seen_at: now });
+        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: normalizedMac, plan_id: planId, activated: true, activated_at: now, device_name: 'Pré-autorizado', platform: 'unknown', last_seen_at: now });
       }
       return json({ success: true });
     }
