@@ -787,7 +787,7 @@ Deno.serve(async (req) => {
     if (action === 'get_stats') {
       const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const [
         { count: total }, { count: active }, { count: blocked },
         { count: newToday }, { count: online }, { count: plans }, { count: watching }
@@ -799,7 +799,7 @@ Deno.serve(async (req) => {
         scopeDevices(supabase.from('devices').select('*', { count: 'exact', head: true }).gte('last_seen_at', fiveMinAgo)),
         scopePlans(supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true)),
         scopeDevices(supabase.from('devices').select('*', { count: 'exact', head: true })
-          .not('current_content', 'is', null).gte('current_content_at', thirtyMinAgo)),
+          .not('current_content', 'is', null).gte('current_content_at', sixtyMinAgo)),
       ]);
       return json({
         stats: {
@@ -812,12 +812,13 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'get_watching_now') {
-      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      // 60-minute window: player reports every 2min but gaps (background/sleep) can exceed 30min
+      const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const { data: watching, error } = await scopeDevices(
         supabase.from('devices')
           .select('id, email, mac_address, device_name, platform, current_content, current_content_type, current_content_at, last_seen_at, client_name, rep_id, admin_id')
           .not('current_content', 'is', null)
-          .gte('current_content_at', thirtyMinAgo)
+          .gte('current_content_at', sixtyMinAgo)
           .order('current_content_at', { ascending: false })
       );
       if (error) throw error;

@@ -291,9 +291,9 @@ export default function AdminScreen() {
   }, [authenticated, loadAll]);
 
   useEffect(() => {
-    if (authenticated && activeTab === 'watching') {
+    if (authenticated && (activeTab === 'watching' || activeTab === 'dashboard')) {
       loadWatching();
-      watchingIntervalRef.current = setInterval(loadWatching, 15000);
+      watchingIntervalRef.current = setInterval(loadWatching, 10000);
       return () => { if (watchingIntervalRef.current) clearInterval(watchingIntervalRef.current); };
     }
   }, [authenticated, activeTab, loadWatching]);
@@ -977,7 +977,7 @@ export default function AdminScreen() {
               <Ionicons name="eye-outline" size={18} color="#9C27B0" />
               <Text style={styles.watchingTitle}>Assistindo Agora</Text>
               <View style={styles.watchingLiveDot} />
-              <Text style={styles.watchingLiveText}>Tempo real (atualiza 15s)</Text>
+              <Text style={styles.watchingLiveText}>Tempo real (atualiza 10s)</Text>
               <Pressable onPress={loadWatching} hitSlop={8} style={{ marginLeft: 'auto' }}><Ionicons name="refresh" size={18} color={Colors.primary} /></Pressable>
             </View>
             {watchingNow.length === 0 ? (
