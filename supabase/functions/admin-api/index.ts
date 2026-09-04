@@ -596,7 +596,11 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'get_plans') {
-      const { data: plans, error } = await supabase.from('plans').select('*').order('created_at', { ascending: false });
+      // Sub-admins only see their own plans; root admin sees plans with no admin_id (root-owned)
+      const plansQuery = resolvedAdminId
+        ? supabase.from('plans').select('*').eq('admin_id', resolvedAdminId).order('created_at', { ascending: false })
+        : supabase.from('plans').select('*').is('admin_id', null).order('created_at', { ascending: false });
+      const { data: plans, error } = await plansQuery;
       if (error) throw error;
       const plansWithCount = await Promise.all((plans || []).map(async (plan: any) => {
         const { count } = await supabase.from('devices').select('*', { count: 'exact', head: true }).eq('plan_id', plan.id).eq('activated', true);
@@ -608,22 +612,31 @@ Deno.serve(async (req) => {
     if (action === 'create_plan') {
       const { data } = body;
       const { name, server_url, xtream_username, xtream_password, max_macs, notes } = data;
-      const { data: plan, error } = await supabase.from('plans').insert({ name, server_url, xtream_username, xtream_password, max_macs: max_macs || 5, notes: notes || null }).select().single();
+      // Tag the plan with admin_id so sub-admins stay isolated from root plans
+      const { data: plan, error } = await supabase.from('plans').insert({ name, server_url, xtream_username, xtream_password, max_macs: max_macs || 5, notes: notes || null, admin_id: resolvedAdminId || null }).select().single();
       if (error) throw error;
       return json({ plan });
     }
 
     if (action === 'update_plan') {
       const { data } = body;
-      const { error } = await supabase.from('plans').update({ ...data.updates, updated_at: new Date().toISOString() }).eq('id', data.planId);
+      // Ensure sub-admin can only update their own plans
+      const updateQuery = resolvedAdminId
+        ? supabase.from('plans').update({ ...data.updates, updated_at: new Date().toISOString() }).eq('id', data.planId).eq('admin_id', resolvedAdminId)
+        : supabase.from('plans').update({ ...data.updates, updated_at: new Date().toISOString() }).eq('id', data.planId).is('admin_id', null);
+      const { error } = await updateQuery;
       if (error) throw error;
       return json({ success: true });
     }
 
     if (action === 'delete_plan') {
       const { data } = body;
+      // Ensure sub-admin can only delete their own plans
+      const deleteQuery = resolvedAdminId
+        ? supabase.from('plans').delete().eq('id', data.planId).eq('admin_id', resolvedAdminId)
+        : supabase.from('plans').delete().eq('id', data.planId).is('admin_id', null);
       await supabase.from('devices').update({ plan_id: null, activated: false }).eq('plan_id', data.planId);
-      const { error } = await supabase.from('plans').delete().eq('id', data.planId);
+      const { error } = await deleteQuery;
       if (error) throw error;
       return json({ success: true });
     }
@@ -650,7 +663,9 @@ Deno.serve(async (req) => {
         addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).not('blocked_reason', 'is', null)),
         addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString())),
         addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).gte('last_seen_at', fiveMinAgo)),
-        supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true),
+        resolvedAdminId
+          ? supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true).eq('admin_id', resolvedAdminId)
+          : supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true).is('admin_id', null),
         addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).not('current_content', 'is', null).gte('current_content_at', new Date(Date.now() - 30 * 60 * 1000).toISOString())),
       ]);
       return json({ stats: { total: total || 0, active: active || 0, pending: (total || 0) - (active || 0) - (blocked || 0), blocked: blocked || 0, newToday: newToday || 0, online: online || 0, plans: plans || 0, watching: watching || 0 } });
@@ -699,6 +714,13 @@ Deno.serve(async (req) => {
     if (action === 'pre_authorize_email') {
       const { data } = body;
       const { email, planId, macAddress } = data;
+      // Verify the plan belongs to this admin before using it
+      if (planId) {
+        const planCheck = resolvedAdminId
+          ? await supabase.from('plans').select('id').eq('id', planId).eq('admin_id', resolvedAdminId).maybeSingle()
+          : await supabase.from('plans').select('id').eq('id', planId).is('admin_id', null).maybeSingle();
+        if (!planCheck.data) throw new Error('Plano não encontrado ou não pertence a este admin');
+      }
       const normalizedEmail = email.toLowerCase().trim();
       const normalizedMac = normalizeMac(macAddress);
       const now = new Date().toISOString();
