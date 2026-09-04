@@ -176,33 +176,42 @@ export default function AdminScreen() {
   async function handlePasswordSubmit() {
     if (!passwordInput.trim()) { setPasswordError('Digite a senha de acesso'); return; }
     setLoading(true);
+    setPasswordError('');
     try {
       if (loginMode === 'subadmin') {
         if (!subAdminUsername.trim()) { setPasswordError('Digite o usuário'); setLoading(false); return; }
         const result = await subAdminLogin(subAdminUsername.trim(), passwordInput.trim());
         if (!result.ok || !result.admin) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
+        // Set credentials BEFORE any data fetching
         setSubAdminCredentials(result.admin.id, passwordInput.trim());
         setRepSubAdminCredentials(result.admin.id, passwordInput.trim());
         setCurrentSubAdmin(result.admin);
         setIsSubAdmin(true);
         setAuthenticated(true);
-        loadAllForSubAdmin();
+        await loadAllForSubAdmin();
       } else {
-        setAdminPassword(passwordInput);
-        setRepAdminPassword(passwordInput);
-        await getStats();
+        // Set password BEFORE calling getStats so auth header is populated
+        setAdminPassword(passwordInput.trim());
+        setRepAdminPassword(passwordInput.trim());
+        // Verify password by calling getStats
+        const statsData = await getStats();
+        setStats(statsData);
         setAuthenticated(true);
-        loadAll();
+        // Load all data after successful auth
+        await loadAll(true);
       }
     } catch (err: any) {
       const msg = err?.message || '';
-      if (msg.includes('401') || msg.toLowerCase().includes('senha')) {
+      if (msg.includes('401') || msg.toLowerCase().includes('senha') || msg.toLowerCase().includes('incorreta')) {
         setPasswordError('Senha incorreta');
       } else {
         setPasswordError('Erro de conexão. Tente novamente.');
       }
+      // Clear credentials on failure
       setAdminPassword('');
+      setRepAdminPassword('');
       clearSubAdminCredentials();
+      clearRepSubAdminCredentials();
     }
     setLoading(false);
   }
