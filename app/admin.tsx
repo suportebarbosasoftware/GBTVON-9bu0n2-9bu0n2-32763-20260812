@@ -177,37 +177,38 @@ export default function AdminScreen() {
     if (!passwordInput.trim()) { setPasswordError('Digite a senha de acesso'); return; }
     setLoading(true);
     setPasswordError('');
+    const pwd = passwordInput.trim();
     try {
       if (loginMode === 'subadmin') {
         if (!subAdminUsername.trim()) { setPasswordError('Digite o usuário'); setLoading(false); return; }
-        const result = await subAdminLogin(subAdminUsername.trim(), passwordInput.trim());
+        const result = await subAdminLogin(subAdminUsername.trim(), pwd);
         if (!result.ok || !result.admin) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
         // Set credentials BEFORE any data fetching
-        setSubAdminCredentials(result.admin.id, passwordInput.trim());
-        setRepSubAdminCredentials(result.admin.id, passwordInput.trim());
+        setSubAdminCredentials(result.admin.id, pwd);
+        setRepSubAdminCredentials(result.admin.id, pwd);
         setCurrentSubAdmin(result.admin);
         setIsSubAdmin(true);
         setAuthenticated(true);
         await loadAllForSubAdmin();
       } else {
-        // Set password BEFORE calling getStats so auth header is populated
-        setAdminPassword(passwordInput.trim());
-        setRepAdminPassword(passwordInput.trim());
+        // Set password in BOTH services BEFORE any API call
+        setAdminPassword(pwd);
+        setRepAdminPassword(pwd);
         // Verify password by calling getStats
         const statsData = await getStats();
         setStats(statsData);
+        // Load all data — pass pwd directly to avoid stale closure issue
+        await loadAllRoot(pwd);
         setAuthenticated(true);
-        // Load all data after successful auth
-        await loadAll(true);
       }
     } catch (err: any) {
       const msg = err?.message || '';
-      if (msg.includes('401') || msg.toLowerCase().includes('senha') || msg.toLowerCase().includes('incorreta')) {
+      if (msg.includes('401') || msg.includes('403') || msg.toLowerCase().includes('senha') || msg.toLowerCase().includes('incorreta')) {
         setPasswordError('Senha incorreta');
       } else {
         setPasswordError('Erro de conexão. Tente novamente.');
       }
-      // Clear credentials on failure
+      // Only clear credentials on auth failure
       setAdminPassword('');
       setRepAdminPassword('');
       clearSubAdminCredentials();
@@ -216,7 +217,7 @@ export default function AdminScreen() {
     setLoading(false);
   }
 
-  /** Load for sub-admin — called immediately after sub-admin login (isSubAdmin state not yet committed) */
+  /** Load for sub-admin — called immediately after sub-admin login */
   async function loadAllForSubAdmin(silent = false) {
     if (!silent) setLoading(true);
     try {
@@ -232,18 +233,45 @@ export default function AdminScreen() {
     setRefreshing(false);
   }
 
+  /** Load for root admin — called after login with explicit password to avoid stale closure */
+  async function loadAllRoot(pwd: string, silent = false) {
+    // Ensure both services have the password before parallel calls
+    setAdminPassword(pwd);
+    setRepAdminPassword(pwd);
+    if (!silent) setLoading(true);
+    try {
+      const [s, d, p, n, repsList, sourcesList, subAdminsList] = await Promise.all([
+        getStats(), getDevices(), getPlans(), getNotifications(),
+        getRepresentatives(), getSources(), getSubAdmins()
+      ]);
+      setStats(s); setDevices(d); setPlans(p); setNotifications(n);
+      setReps(repsList); setSources(sourcesList); setSubAdmins(subAdminsList ?? []);
+    } catch (err: any) {
+      if (!silent) Alert.alert('Erro', err.message);
+    }
+    if (!silent) setLoading(false);
+    setRefreshing(false);
+  }
+
   const loadAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const promises: Promise<any>[] = [
-        getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
-      ];
-      if (!isSubAdmin) promises.push(getSubAdmins());
-      const results = await Promise.all(promises);
-      const [s, d, p, n, repsList, sourcesList, subAdminsList] = results;
-      setStats(s); setDevices(d); setPlans(p); setNotifications(n);
-      setReps(repsList); setSources(sourcesList);
-      if (!isSubAdmin && subAdminsList) setSubAdmins(subAdminsList);
+      if (isSubAdmin) {
+        // Sub-admin: no getSubAdmins()
+        const [s, d, p, n, repsList, sourcesList] = await Promise.all([
+          getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
+        ]);
+        setStats(s); setDevices(d); setPlans(p); setNotifications(n);
+        setReps(repsList); setSources(sourcesList);
+      } else {
+        // Root admin: include getSubAdmins()
+        const [s, d, p, n, repsList, sourcesList, subAdminsList] = await Promise.all([
+          getStats(), getDevices(), getPlans(), getNotifications(),
+          getRepresentatives(), getSources(), getSubAdmins()
+        ]);
+        setStats(s); setDevices(d); setPlans(p); setNotifications(n);
+        setReps(repsList); setSources(sourcesList); setSubAdmins(subAdminsList ?? []);
+      }
     } catch (err: any) {
       if (!silent) Alert.alert('Erro', err.message);
     }
@@ -511,7 +539,7 @@ export default function AdminScreen() {
             <Text style={styles.headerSub}>{onlineCount} online • {watchingNow.length} assistindo</Text>
           </View>
         </View>
-        <Pressable onPress={() => loadAll()} style={styles.headerRefresh} hitSlop={8} disabled={loading}>
+        <Pressable onPress={() => isSubAdmin ? loadAllForSubAdmin() : loadAll()} style={styles.headerRefresh} hitSlop={8} disabled={loading}>
           {loading ? <ActivityIndicator color={Colors.primary} size="small" /> : <Ionicons name="refresh" size={20} color={Colors.primary} />}
         </Pressable>
       </View>
