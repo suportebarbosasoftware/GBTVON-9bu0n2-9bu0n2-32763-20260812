@@ -15,7 +15,9 @@ import {
   deleteInactiveDevices, grantGracePeriod, updateDeviceNotes, setDeviceExpiry,
   setDevicePrice, createPlan, updatePlan, deletePlan, preAuthorizeEmail,
   sendNotification, deleteNotification, setAdminPassword,
-  Device, Plan, AdminStats, Notification, WatchingDevice,
+  getSubAdmins, createSubAdmin, updateSubAdmin, deleteSubAdmin, subAdminLogin,
+  setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession,
+  Device, Plan, AdminStats, Notification, WatchingDevice, SubAdmin,
 } from '@/services/adminApiService';
 import {
   getRepresentatives, createRepresentative, updateRepresentative, deleteRepresentative,
@@ -25,7 +27,7 @@ import {
 
 const { width } = Dimensions.get('window');
 
-type Tab = 'dashboard' | 'devices' | 'plans' | 'notifications' | 'watching' | 'add' | 'reps' | 'sources' | 'financial';
+type Tab = 'dashboard' | 'devices' | 'plans' | 'notifications' | 'watching' | 'add' | 'reps' | 'sources' | 'financial' | 'subadmins';
 
 function isOnline(lastSeen: string | null): boolean {
   if (!lastSeen) return false;
@@ -72,6 +74,10 @@ export default function AdminScreen() {
   const router = useRouter();
 
   const [authenticated, setAuthenticated] = useState(false);
+  const [isSubAdmin, setIsSubAdmin] = useState(false);
+  const [currentSubAdmin, setCurrentSubAdmin] = useState<SubAdmin | null>(null);
+  const [loginMode, setLoginMode] = useState<'root' | 'subadmin'>('root');
+  const [subAdminUsername, setSubAdminUsername] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -135,6 +141,13 @@ export default function AdminScreen() {
   const [creditsMode, setCreditsMode] = useState<'add' | 'remove'>('add');
   const [creditsDescription, setCreditsDescription] = useState('');
 
+  // Sub-admins
+  const [subAdmins, setSubAdmins] = useState<SubAdmin[]>([]);
+  const [subAdminModal, setSubAdminModal] = useState(false);
+  const [editingSubAdmin, setEditingSubAdmin] = useState<SubAdmin | null>(null);
+  const [subAdminForm, setSubAdminForm] = useState({ username: '', password: '', name: '', notes: '' });
+  const [subAdminFormLoading, setSubAdminFormLoading] = useState(false);
+
   // Sources
   const [sources, setSources] = useState<Source[]>([]);
   const [sourceModal, setSourceModal] = useState(false);
@@ -163,11 +176,22 @@ export default function AdminScreen() {
     if (!passwordInput.trim()) { setPasswordError('Digite a senha de acesso'); return; }
     setLoading(true);
     try {
-      setAdminPassword(passwordInput);
-      setRepAdminPassword(passwordInput);
-      await getStats();
-      setAuthenticated(true);
-      loadAll();
+      if (loginMode === 'subadmin') {
+        if (!subAdminUsername.trim()) { setPasswordError('Digite o usuário'); setLoading(false); return; }
+        const result = await subAdminLogin(subAdminUsername.trim(), passwordInput.trim());
+        if (!result.ok || !result.admin) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
+        setSubAdminCredentials(result.admin.id, passwordInput.trim());
+        setCurrentSubAdmin(result.admin);
+        setIsSubAdmin(true);
+        setAuthenticated(true);
+        loadAll();
+      } else {
+        setAdminPassword(passwordInput);
+        setRepAdminPassword(passwordInput);
+        await getStats();
+        setAuthenticated(true);
+        loadAll();
+      }
     } catch (err: any) {
       const msg = err?.message || '';
       if (msg.includes('401') || msg.toLowerCase().includes('senha')) {
@@ -176,6 +200,7 @@ export default function AdminScreen() {
         setPasswordError('Erro de conexão. Tente novamente.');
       }
       setAdminPassword('');
+      clearSubAdminCredentials();
     }
     setLoading(false);
   }
@@ -183,17 +208,21 @@ export default function AdminScreen() {
   const loadAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [s, d, p, n, repsList, sourcesList] = await Promise.all([
+      const promises: Promise<any>[] = [
         getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
-      ]);
+      ];
+      if (!isSubAdmin) promises.push(getSubAdmins());
+      const results = await Promise.all(promises);
+      const [s, d, p, n, repsList, sourcesList, subAdminsList] = results;
       setStats(s); setDevices(d); setPlans(p); setNotifications(n);
       setReps(repsList); setSources(sourcesList);
+      if (!isSubAdmin && subAdminsList) setSubAdmins(subAdminsList);
     } catch (err: any) {
       if (!silent) Alert.alert('Erro', err.message);
     }
     if (!silent) setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [isSubAdmin]);
 
   const loadWatching = useCallback(async () => {
     try { const w = await getWatchingNow(); setWatchingNow(w); } catch {}
@@ -396,14 +425,39 @@ export default function AdminScreen() {
         <Image source={require('@/assets/images/icon.png')} style={styles.loginLogo} contentFit="contain" />
         <Text style={styles.loginTitle}>Painel Administrativo</Text>
         <Text style={styles.loginSubtitle}>GBTVON — Acesso Restrito</Text>
+
+        {/* Login mode toggle */}
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16, width: '100%', maxWidth: 360 }}>
+          <Pressable
+            style={[styles.loginBtn, { flex: 1, height: 38, backgroundColor: loginMode === 'root' ? Colors.primary : '#1a1a1a', borderWidth: 1, borderColor: loginMode === 'root' ? Colors.primary : 'rgba(255,255,255,0.1)' }]}
+            onPress={() => { setLoginMode('root'); setPasswordInput(''); setSubAdminUsername(''); setPasswordError(''); }}
+          >
+            <Ionicons name="shield-checkmark-outline" size={14} color={loginMode === 'root' ? '#fff' : Colors.textMuted} />
+            <Text style={[styles.loginBtnText, { fontSize: 12, color: loginMode === 'root' ? '#fff' : Colors.textMuted }]}>  Admin Raiz</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.loginBtn, { flex: 1, height: 38, backgroundColor: loginMode === 'subadmin' ? '#1565C0' : '#1a1a1a', borderWidth: 1, borderColor: loginMode === 'subadmin' ? '#1565C0' : 'rgba(255,255,255,0.1)' }]}
+            onPress={() => { setLoginMode('subadmin'); setPasswordInput(''); setSubAdminUsername(''); setPasswordError(''); }}
+          >
+            <Ionicons name="person-circle-outline" size={14} color={loginMode === 'subadmin' ? '#fff' : Colors.textMuted} />
+            <Text style={[styles.loginBtnText, { fontSize: 12, color: loginMode === 'subadmin' ? '#fff' : Colors.textMuted }]}>  Sub-Admin</Text>
+          </Pressable>
+        </View>
+
         <View style={styles.loginCard}>
+          {loginMode === 'subadmin' && (
+            <View style={[styles.inputWrap, { marginBottom: 8 }]}>
+              <Ionicons name="person-outline" size={18} color={Colors.textMuted} />
+              <TextInput style={styles.input} placeholder="Usuário do sub-admin" placeholderTextColor={Colors.textMuted} value={subAdminUsername} onChangeText={t => { setSubAdminUsername(t); setPasswordError(''); }} autoCapitalize="none" returnKeyType="next" />
+            </View>
+          )}
           <View style={styles.inputWrap}>
             <Ionicons name="lock-closed-outline" size={18} color={Colors.textMuted} />
-            <TextInput style={styles.input} placeholder="Senha de acesso" placeholderTextColor={Colors.textMuted} value={passwordInput} onChangeText={t => { setPasswordInput(t); setPasswordError(''); }} secureTextEntry returnKeyType="go" onSubmitEditing={handlePasswordSubmit} />
+            <TextInput style={styles.input} placeholder={loginMode === 'root' ? 'Senha de acesso' : 'Senha do sub-admin'} placeholderTextColor={Colors.textMuted} value={passwordInput} onChangeText={t => { setPasswordInput(t); setPasswordError(''); }} secureTextEntry returnKeyType="go" onSubmitEditing={handlePasswordSubmit} />
           </View>
           {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
-          <Pressable style={styles.loginBtn} onPress={handlePasswordSubmit}>
-            <Ionicons name="shield-checkmark-outline" size={18} color="#fff" />
+          <Pressable style={[styles.loginBtn, { backgroundColor: loginMode === 'subadmin' ? '#1565C0' : Colors.primary }]} onPress={handlePasswordSubmit}>
+            <Ionicons name={loginMode === 'subadmin' ? 'person-circle-outline' : 'shield-checkmark-outline'} size={18} color="#fff" />
             <Text style={styles.loginBtnText}>  Entrar</Text>
           </Pressable>
         </View>
@@ -424,7 +478,7 @@ export default function AdminScreen() {
         <Pressable onPress={() => router.back()} style={styles.headerBack} hitSlop={8}><Ionicons name="arrow-back" size={20} color="#fff" /></Pressable>
         <Image source={require('@/assets/images/icon.png')} style={styles.headerLogo} contentFit="contain" />
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Painel Admin</Text>
+          <Text style={styles.headerTitle}>{isSubAdmin ? `Sub-Admin: ${currentSubAdmin?.name}` : 'Painel Admin'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#4CAF50' }} />
             <Text style={styles.headerSub}>{onlineCount} online • {watchingNow.length} assistindo</Text>
@@ -448,6 +502,7 @@ export default function AdminScreen() {
             { key: 'watching', label: 'Assistindo', icon: 'eye-outline' },
             { key: 'add', label: 'Pré-ativar', icon: 'person-add-outline' },
             { key: 'financial', label: 'Financeiro', icon: 'cash-outline' },
+            ...(!isSubAdmin ? [{ key: 'subadmins' as Tab, label: 'Sub-Admins', icon: 'shield-half-outline' }] : []),
           ] as { key: Tab; label: string; icon: string }[]).map(tab => (
             <Pressable key={tab.key} style={[styles.tabItem, activeTab === tab.key && styles.tabItemActive]} onPress={() => setActiveTab(tab.key)}>
               <Ionicons name={tab.icon as any} size={18} color={activeTab === tab.key ? Colors.primary : Colors.textMuted} />
@@ -1026,6 +1081,52 @@ export default function AdminScreen() {
           );
         })()}
 
+        {/* ── SUB-ADMINS ── */}
+        {activeTab === 'subadmins' && !isSubAdmin && (
+          <View style={styles.section}>
+            <Pressable style={styles.createBtn} onPress={() => { setEditingSubAdmin(null); setSubAdminForm({ username: '', password: '', name: '', notes: '' }); setSubAdminModal(true); }}>
+              <Ionicons name="person-add-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Novo Sub-Admin</Text>
+            </Pressable>
+            <View style={[styles.creditsInfoCard, { marginBottom: 14, backgroundColor: 'rgba(21,101,192,0.06)', borderColor: 'rgba(21,101,192,0.2)' }]}>
+              <Ionicons name="information-circle-outline" size={14} color="#42A5F5" />
+              <Text style={[styles.planCred, { marginLeft: 8, fontSize: 11, flex: 1, color: '#90CAF9' }]}>
+                Sub-admins têm acesso isolado — eles só veem seus próprios representantes, fontes e dispositivos. Você continua sendo o dono da plataforma.
+              </Text>
+            </View>
+            {subAdmins.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="shield-half-outline" size={40} color={Colors.textMuted} />
+                <Text style={styles.emptyText}>Nenhum sub-admin criado</Text>
+              </View>
+            ) : subAdmins.map(sa => (
+              <View key={sa.id} style={[styles.planCard, { borderColor: 'rgba(21,101,192,0.2)' }]}>
+                <View style={styles.planCardHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.planName}>{sa.name}</Text>
+                    <Text style={styles.planServer}>@{sa.username} • {sa.active ? 'Ativo' : 'Inativo'}</Text>
+                  </View>
+                  <View style={[styles.planMacBadge, { backgroundColor: sa.active ? 'rgba(21,101,192,0.12)' : 'rgba(255,255,255,0.04)', borderColor: sa.active ? 'rgba(21,101,192,0.4)' : 'rgba(255,255,255,0.1)' }]}>
+                    <Ionicons name={sa.active ? 'checkmark-circle' : 'close-circle'} size={13} color={sa.active ? '#42A5F5' : Colors.textMuted} />
+                    <Text style={[styles.planMacText, { color: sa.active ? '#42A5F5' : Colors.textMuted }]}> {sa.active ? 'Ativo' : 'Inativo'}</Text>
+                  </View>
+                </View>
+                {sa.notes ? <Text style={[styles.planCred, { marginBottom: 10 }]}>{sa.notes}</Text> : null}
+                <View style={styles.planCardActions}>
+                  <Pressable style={styles.planActionBtn} onPress={() => { setEditingSubAdmin(sa); setSubAdminForm({ username: sa.username, password: '', name: sa.name, notes: sa.notes || '' }); setSubAdminModal(true); }}>
+                    <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
+                  </Pressable>
+                  <Pressable style={[styles.planActionBtn, { borderColor: sa.active ? 'rgba(255,152,0,0.3)' : 'rgba(76,175,80,0.3)' }]} onPress={async () => { try { await updateSubAdmin(sa.id, { active: !sa.active }); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } }}>
+                    <Ionicons name={sa.active ? 'pause-circle-outline' : 'play-circle-outline'} size={16} color={sa.active ? '#FF9800' : '#4CAF50'} /><Text style={[styles.planActionText, { color: sa.active ? '#FF9800' : '#4CAF50' }]}>{sa.active ? 'Suspender' : 'Ativar'}</Text>
+                  </Pressable>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir Sub-Admin', `Excluir ${sa.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSubAdmin(sa.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
+                    <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* ── PRE-AUTHORIZE ── */}
         {activeTab === 'add' && (
           <View style={styles.section}>
@@ -1346,6 +1447,60 @@ export default function AdminScreen() {
                   }
                 </Pressable>
               </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── SUB-ADMIN MODAL ── */}
+      <Modal visible={subAdminModal} transparent animationType="slide" onRequestClose={() => setSubAdminModal(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdropFlex}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalSheet}>
+              <View style={styles.modalHandle} />
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                <Text style={styles.modalTitle}>{editingSubAdmin ? 'Editar Sub-Admin' : 'Novo Sub-Admin'}</Text>
+                <View style={[styles.creditsInfoCard, { marginBottom: 16, backgroundColor: 'rgba(21,101,192,0.06)', borderColor: 'rgba(21,101,192,0.2)' }]}>
+                  <Ionicons name="shield-half-outline" size={14} color="#42A5F5" />
+                  <Text style={[styles.planCred, { marginLeft: 8, fontSize: 11, flex: 1, color: '#90CAF9' }]}>
+                    O sub-admin só verá seus próprios representantes, fontes e dispositivos. Sua rede principal fica isolada.
+                  </Text>
+                </View>
+                {([
+                  { field: 'name', label: 'Nome completo *', placeholder: 'Ex: Carlos Revendas', icon: 'person-outline', kb: 'default' },
+                  { field: 'username', label: editingSubAdmin ? 'Usuário (não alterável)' : 'Usuário para login *', placeholder: 'Ex: carlos123', icon: 'at-outline', kb: 'default', disabled: !!editingSubAdmin },
+                  { field: 'password', label: editingSubAdmin ? 'Nova senha (vazio = manter)' : 'Senha *', placeholder: '••••••••', icon: 'lock-closed-outline', kb: 'default', secure: true },
+                  { field: 'notes', label: 'Observações', placeholder: 'Opcional...', icon: 'document-text-outline', kb: 'default' },
+                ] as any[]).map(({ field, label, placeholder, icon, kb, secure, disabled }) => (
+                  <View key={field}>
+                    <Text style={styles.fieldLabel}>{label}</Text>
+                    <View style={[styles.inputWrap, disabled && { opacity: 0.5 }]}>
+                      <Ionicons name={icon} size={16} color={Colors.textMuted} />
+                      <TextInput style={styles.input} placeholder={placeholder} placeholderTextColor={Colors.textMuted} value={(subAdminForm as any)[field]} onChangeText={v => !disabled && setSubAdminForm(f => ({ ...f, [field]: v }))} keyboardType={kb} secureTextEntry={secure} autoCapitalize="none" editable={!disabled} />
+                    </View>
+                  </View>
+                ))}
+                <View style={styles.modalActions}>
+                  <Pressable style={styles.modalCancelBtn} onPress={() => setSubAdminModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
+                  <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#1565C0' }]} onPress={async () => {
+                    if (!subAdminForm.name) { Alert.alert('Nome obrigatório'); return; }
+                    if (!editingSubAdmin && (!subAdminForm.username || !subAdminForm.password)) { Alert.alert('Usuário e senha obrigatórios'); return; }
+                    setSubAdminFormLoading(true);
+                    try {
+                      if (editingSubAdmin) {
+                        await updateSubAdmin(editingSubAdmin.id, { name: subAdminForm.name, password: subAdminForm.password || undefined, notes: subAdminForm.notes });
+                      } else {
+                        await createSubAdmin({ username: subAdminForm.username, password: subAdminForm.password, name: subAdminForm.name, notes: subAdminForm.notes || undefined });
+                      }
+                      setSubAdminModal(false);
+                      await loadAll(true);
+                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                    setSubAdminFormLoading(false);
+                  }} disabled={subAdminFormLoading}>
+                    {subAdminFormLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.modalActionText}>{editingSubAdmin ? 'Salvar' : 'Criar Sub-Admin'}</Text>}
+                  </Pressable>
+                </View>
+              </ScrollView>
             </View>
           </View>
         </KeyboardAvoidingView>

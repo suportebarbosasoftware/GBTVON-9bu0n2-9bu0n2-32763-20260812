@@ -128,6 +128,7 @@ export default function RepPanelScreen() {
   // Renew modal
   const [renewModal, setRenewModal] = useState(false);
   const [renewDays, setRenewDays] = useState('30');
+  const [renewDateStr, setRenewDateStr] = useState(''); // custom date DD/MM/YYYY for renew
   const [renewLoading, setRenewLoading] = useState(false);
 
   const [editPriceModal, setEditPriceModal] = useState(false);
@@ -368,6 +369,28 @@ export default function RepPanelScreen() {
         }
       }
     ]);
+  }
+
+  function handleRenewDateChange(raw: string) {
+    // Auto-insert slashes: "30" -> "30/" -> "30/09" -> "30/09/" -> "30/09/2026"
+    const digits = raw.replace(/\D/g, '');
+    let formatted = digits;
+    if (digits.length > 2) formatted = digits.slice(0, 2) + '/' + digits.slice(2);
+    if (digits.length > 4) formatted = digits.slice(0, 2) + '/' + digits.slice(2, 4) + '/' + digits.slice(4, 8);
+    setRenewDateStr(formatted);
+    const parsed = parseDateBR(formatted);
+    if (parsed && parsed > new Date()) {
+      setRenewDays(String(daysBetween(new Date(), parsed)));
+    }
+  }
+
+  function applyRenewPreset(days: string) {
+    setRenewDays(days);
+    const d = new Date();
+    const base = selectedDevice?.expires_at && new Date(selectedDevice.expires_at) > new Date()
+      ? new Date(selectedDevice.expires_at) : new Date();
+    base.setDate(base.getDate() + parseInt(days));
+    setRenewDateStr(formatDateBR(base));
   }
 
   async function handleRenew() {
@@ -1352,6 +1375,7 @@ export default function RepPanelScreen() {
                         style={[styles.renewBtn, { flex: 1, marginTop: 0, marginBottom: 0 }, actionLoading && { opacity: 0.5 }]}
                         onPress={() => {
                           setRenewDays('30');
+                          setRenewDateStr('');
                           pendingRenewRef.current = true;
                           setDetailModal(false);
                         }}
@@ -1478,7 +1502,7 @@ export default function RepPanelScreen() {
                     <Pressable
                       key={opt.days}
                       style={[styles.daysBtn, renewDays === opt.days && styles.daysBtnActive]}
-                      onPress={() => setRenewDays(opt.days)}
+                      onPress={() => applyRenewPreset(opt.days)}
                     >
                       <Text style={[styles.daysBtnLabel, renewDays === opt.days && { color: '#fff' }]}>{opt.label}</Text>
                       <Text style={[styles.daysBtnCredits, renewDays === opt.days && { color: 'rgba(255,255,255,0.75)' }]}>{opt.credits} cr.</Text>
@@ -1486,16 +1510,25 @@ export default function RepPanelScreen() {
                   ))}
                 </View>
               </ScrollView>
-              <View style={styles.inputWrap}>
-                <Ionicons name="calendar-outline" size={16} color={Colors.textMuted} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Ou digite o número de dias"
-                  placeholderTextColor={Colors.textMuted}
-                  value={renewDays}
-                  onChangeText={v => setRenewDays(v.replace(/\D/g, ''))}
-                  keyboardType="number-pad"
-                />
+
+              {/* Custom date input with auto-slash masking */}
+              <View style={styles.dateRow}>
+                <View style={[styles.inputWrap, { flex: 1, marginBottom: 0 }]}>
+                  <Ionicons name="calendar-outline" size={16} color={Colors.textMuted} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Data (DD/MM/AAAA)"
+                    placeholderTextColor={Colors.textMuted}
+                    value={renewDateStr}
+                    onChangeText={handleRenewDateChange}
+                    keyboardType="numeric"
+                    maxLength={10}
+                  />
+                </View>
+                <View style={styles.daysCountBadge}>
+                  <Text style={styles.daysCountText}>{renewDays || '—'}</Text>
+                  <Text style={styles.daysCountLabel}>dias</Text>
+                </View>
               </View>
               {renewDays && parseInt(renewDays) > 0 ? (
                 <View style={styles.creditsCostRow}>

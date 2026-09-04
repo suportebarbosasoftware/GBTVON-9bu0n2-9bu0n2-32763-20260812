@@ -8,7 +8,7 @@ const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 /** Normalize MAC to uppercase colon format XX:XX:XX:XX:XX:XX */
 function normalizeMac(mac: string): string {
   const hex = mac.trim().toUpperCase().replace(/[^A-F0-9]/g, '');
-  if (hex.length !== 12) return mac.trim().toUpperCase(); // return as-is if unexpected length
+  if (hex.length !== 12) return mac.trim().toUpperCase();
   return hex.match(/.{2}/g)!.join(':');
 }
 
@@ -29,43 +29,51 @@ Deno.serve(async (req) => {
     // ── Public / no-auth actions ──────────────────────────────────────────────
 
     if (action === 'update_current_content') {
-      const { data } = body;
-      const { mac_address, content, content_type } = data || {};
+      // Support both flat body and body.data wrapper for compatibility
+      const rawData = body.data || body;
+      const { mac_address, content, content_type } = rawData;
       console.log('[update_current_content] mac:', mac_address, 'content:', content);
       if (!mac_address) {
-        console.log('[update_current_content] missing mac_address');
         return json({ success: false, error: 'mac_address required' });
       }
-      const { data: updated, error: updateErr } = await supabase.from('devices').update({
+      const normalizedMac = normalizeMac(mac_address);
+      // Try normalized format first, then original
+      let { data: updated, error: updateErr } = await supabase.from('devices').update({
         current_content: content || null,
         current_content_type: content_type || null,
         current_content_at: content ? new Date().toISOString() : null,
         last_seen_at: new Date().toISOString(),
-      }).eq('mac_address', mac_address).select('id');
-      console.log('[update_current_content] updated rows:', updated?.length ?? 0, 'error:', updateErr?.message);
+      }).eq('mac_address', normalizedMac).select('id');
+      if (!updated?.length && !updateErr) {
+        const r2 = await supabase.from('devices').update({
+          current_content: content || null,
+          current_content_type: content_type || null,
+          current_content_at: content ? new Date().toISOString() : null,
+          last_seen_at: new Date().toISOString(),
+        }).eq('mac_address', mac_address.trim()).select('id');
+        updated = r2.data;
+        updateErr = r2.error;
+      }
+      console.log('[update_current_content] updated rows:', updated?.length ?? 0, 'normalized:', normalizedMac, 'error:', updateErr?.message);
       return json({ success: true, updated: updated?.length ?? 0 });
     }
 
-    // ── Representative login (no admin password) ──────────────────────────────
+    // ── Representative login ──────────────────────────────────────────────────
 
     if (action === 'repLogin') {
       const { repNumber, password } = body;
       if (!repNumber || !password) return json({ ok: false, error: 'Código e senha obrigatórios' });
-
       const { data: rep, error } = await supabase
         .from('representatives')
         .select('*')
         .eq('rep_number', repNumber)
         .eq('active', true)
         .maybeSingle();
-
       if (error || !rep) return json({ ok: false, error: 'Representante não encontrado' });
       if (rep.password_hash !== password) return json({ ok: false, error: 'Senha incorreta' });
-
       return json({ ok: true, rep });
     }
 
-    // ── Validate a representative code publicly (for client login screen) ─────
     if (action === 'validateRepCode') {
       const { repNumber } = body;
       if (!repNumber) return json({ ok: false });
@@ -79,7 +87,25 @@ Deno.serve(async (req) => {
       return json({ ok: true, repId: rep.id, repName: rep.name });
     }
 
-    // ── Validate representative credentials helper ─────────────────────────────
+    // ── Sub-admin login (no root password) ────────────────────────────────────
+
+    if (action === 'subAdminLogin') {
+      const { username, password } = body;
+      if (!username || !password) return json({ ok: false, error: 'Usuário e senha obrigatórios' });
+      const { data: adm } = await supabase
+        .from('admins')
+        .select('*')
+        .eq('username', username.trim().toLowerCase())
+        .eq('active', true)
+        .not('parent_id', 'is', null)
+        .maybeSingle();
+      if (!adm) return json({ ok: false, error: 'Sub-admin não encontrado' });
+      if (adm.password_hash !== password) return json({ ok: false, error: 'Senha incorreta' });
+      return json({ ok: true, admin: { id: adm.id, name: adm.name, username: adm.username, parent_id: adm.parent_id } });
+    }
+
+    // ── Helper functions ──────────────────────────────────────────────────────
+
     async function validateRep(repId: string, repPassword: string): Promise<boolean> {
       const { data: rep } = await supabase
         .from('representatives')
@@ -90,7 +116,6 @@ Deno.serve(async (req) => {
       return !!rep && rep.password_hash === repPassword;
     }
 
-    // ── Credit cost helper: proportional (days / 30), rounded to 2 decimals ──
     function computeCreditCost(days: number): number {
       return Math.round((days / 30) * 100) / 100;
     }
@@ -133,228 +158,61 @@ Deno.serve(async (req) => {
       const { repId, repPassword, mac, email, clientName, sourceId, packageType, days, expiresAtDate } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!repId || !mac || !sourceId || !days) throw new Error('Dados incompletos');
-
-      // Normalize MAC to uppercase colon format for consistent matching
       const normalizedMac = normalizeMac(mac);
-
-      const { data: rep } = await supabase
-        .from('representatives')
-        .select('credits')
-        .eq('id', repId)
-        .single();
+      const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
-
       const creditCost = computeCreditCost(parseInt(days));
-      if (rep.credits < creditCost) {
-        throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
-      }
-
-      const { data: source } = await supabase
-        .from('sources')
-        .select('*')
-        .eq('id', sourceId)
-        .single();
+      if (rep.credits < creditCost) throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
+      const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).single();
       if (!source) throw new Error('Fonte não encontrada');
-
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase
-        .from('plans')
-        .select('id')
-        .eq('server_url', source.server_url)
-        .eq('xtream_username', source.xtream_username)
-        .maybeSingle();
-      if (existingPlan) {
-        planId = existingPlan.id;
-      } else {
-        const { data: newPlan } = await supabase
-          .from('plans')
-          .insert({
-            name: source.name,
-            server_url: source.server_url,
-            xtream_username: source.xtream_username,
-            xtream_password: source.xtream_password,
-            max_macs: source.max_connections,
-          })
-          .select('id')
-          .single();
-        planId = newPlan?.id ?? null;
-      }
-
+      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      if (existingPlan) { planId = existingPlan.id; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
       const now = new Date().toISOString();
       let expiresAt: Date;
-      if (expiresAtDate) {
-        expiresAt = new Date(expiresAtDate);
-      } else {
-        expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + parseInt(days));
-      }
-      const normalizedEmail = email
-        ? email.toLowerCase().trim()
-        : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
-
-      const { data: existingDev } = await supabase
-        .from('devices')
-        .select('id')
-        .eq('mac_address', normalizedMac)
-        .maybeSingle();
-
+      if (expiresAtDate) { expiresAt = new Date(expiresAtDate); } else { expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + parseInt(days)); }
+      const normalizedEmail = email ? email.toLowerCase().trim() : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
+      const { data: existingDev } = await supabase.from('devices').select('id').eq('mac_address', normalizedMac).maybeSingle();
       if (existingDev) {
-        await supabase.from('devices').update({
-          email: normalizedEmail,
-          client_name: clientName || null,
-          plan_id: planId,
-          source_id: sourceId,
-          package_type: packageType,
-          rep_id: repId,
-          activated: true,
-          activated_at: now,
-          expires_at: expiresAt.toISOString(),
-          blocked_reason: null,
-          block_reason_detail: null,
-          blocked_at: null,
-          updated_at: now,
-        }).eq('mac_address', normalizedMac);
+        await supabase.from('devices').update({ email: normalizedEmail, client_name: clientName || null, plan_id: planId, source_id: sourceId, package_type: packageType, rep_id: repId, activated: true, activated_at: now, expires_at: expiresAt.toISOString(), blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('mac_address', normalizedMac);
       } else {
-        await supabase.from('devices').insert({
-          email: normalizedEmail,
-          mac_address: normalizedMac,
-          client_name: clientName || null,
-          plan_id: planId,
-          source_id: sourceId,
-          package_type: packageType,
-          rep_id: repId,
-          activated: true,
-          activated_at: now,
-          expires_at: expiresAt.toISOString(),
-          device_name: 'Ativado pelo representante',
-          platform: 'unknown',
-          last_seen_at: now,
-        });
+        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: normalizedMac, client_name: clientName || null, plan_id: planId, source_id: sourceId, package_type: packageType, rep_id: repId, activated: true, activated_at: now, expires_at: expiresAt.toISOString(), device_name: 'Ativado pelo representante', platform: 'unknown', last_seen_at: now });
       }
-
-      await supabase.from('representatives').update({
-        credits: rep.credits - creditCost,
-        updated_at: now,
-      }).eq('id', repId);
-
-      await supabase.from('credit_transactions').insert({
-        rep_id: repId,
-        amount: Math.ceil(creditCost),
-        type: 'consume',
-        description: `Ativação ${parseInt(days)}d ${packageType?.toUpperCase()} — ${normalizedMac} (custo real: ${creditCost.toFixed(2)} cr.)`,
-        device_mac: normalizedMac,
-        days: parseInt(days),
-      });
-
+      await supabase.from('representatives').update({ credits: rep.credits - creditCost, updated_at: now }).eq('id', repId);
+      await supabase.from('credit_transactions').insert({ rep_id: repId, amount: Math.ceil(creditCost), type: 'consume', description: `Ativação ${parseInt(days)}d ${packageType?.toUpperCase()} — ${normalizedMac} (custo real: ${creditCost.toFixed(2)} cr.)`, device_mac: normalizedMac, days: parseInt(days) });
       return json({ success: true, credit_cost: creditCost });
     }
-
-    // ── Rep: Free test activation (1–6 hours, no credit cost) ────────────────
 
     if (action === 'activateRepTest') {
       const { repId, repPassword, mac, email, clientName, sourceId, packageType, hours } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!mac || !sourceId || !hours) throw new Error('Dados incompletos');
-
       const normalizedMac = normalizeMac(mac);
       const hoursNum = Math.min(Math.max(1, parseInt(hours)), 6);
-
-      const { data: source } = await supabase
-        .from('sources')
-        .select('*')
-        .eq('id', sourceId)
-        .single();
+      const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).single();
       if (!source) throw new Error('Fonte não encontrada');
-
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase
-        .from('plans')
-        .select('id')
-        .eq('server_url', source.server_url)
-        .eq('xtream_username', source.xtream_username)
-        .maybeSingle();
-      if (existingPlan) {
-        planId = existingPlan.id;
-      } else {
-        const { data: newPlan } = await supabase
-          .from('plans')
-          .insert({
-            name: source.name,
-            server_url: source.server_url,
-            xtream_username: source.xtream_username,
-            xtream_password: source.xtream_password,
-            max_macs: source.max_connections,
-          })
-          .select('id')
-          .single();
-        planId = newPlan?.id ?? null;
-      }
-
+      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      if (existingPlan) { planId = existingPlan.id; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
       const now = new Date().toISOString();
       const expiresAt = new Date(Date.now() + hoursNum * 60 * 60 * 1000).toISOString();
-      const normalizedEmail = email
-        ? email.toLowerCase().trim()
-        : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
-
-      const { data: existingDev } = await supabase
-        .from('devices')
-        .select('id')
-        .eq('mac_address', normalizedMac)
-        .maybeSingle();
-
+      const normalizedEmail = email ? email.toLowerCase().trim() : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
+      const { data: existingDev } = await supabase.from('devices').select('id').eq('mac_address', normalizedMac).maybeSingle();
       if (existingDev) {
-        await supabase.from('devices').update({
-          email: normalizedEmail,
-          client_name: clientName || null,
-          plan_id: planId,
-          source_id: sourceId,
-          package_type: packageType || 'iptv',
-          rep_id: repId,
-          activated: true,
-          activated_at: now,
-          expires_at: expiresAt,
-          blocked_reason: null,
-          block_reason_detail: null,
-          blocked_at: null,
-          updated_at: now,
-        }).eq('mac_address', normalizedMac);
+        await supabase.from('devices').update({ email: normalizedEmail, client_name: clientName || null, plan_id: planId, source_id: sourceId, package_type: packageType || 'iptv', rep_id: repId, activated: true, activated_at: now, expires_at: expiresAt, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('mac_address', normalizedMac);
       } else {
-        await supabase.from('devices').insert({
-          email: normalizedEmail,
-          mac_address: normalizedMac,
-          client_name: clientName || null,
-          plan_id: planId,
-          source_id: sourceId,
-          package_type: packageType || 'iptv',
-          rep_id: repId,
-          activated: true,
-          activated_at: now,
-          expires_at: expiresAt,
-          device_name: 'Teste gratuito',
-          platform: 'unknown',
-          last_seen_at: now,
-        });
+        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: normalizedMac, client_name: clientName || null, plan_id: planId, source_id: sourceId, package_type: packageType || 'iptv', rep_id: repId, activated: true, activated_at: now, expires_at: expiresAt, device_name: 'Teste gratuito', platform: 'unknown', last_seen_at: now });
       }
-
-      await supabase.from('credit_transactions').insert({
-        rep_id: repId,
-        amount: 0,
-        type: 'consume',
-        description: `Teste ${hoursNum}h — ${normalizedMac}`,
-        device_mac: normalizedMac,
-        days: 0,
-      });
-
+      await supabase.from('credit_transactions').insert({ rep_id: repId, amount: 0, type: 'consume', description: `Teste ${hoursNum}h — ${normalizedMac}`, device_mac: normalizedMac, days: 0 });
       return json({ success: true });
     }
 
     if (action === 'deactivateRepDevice') {
       const { deviceId, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
-      await supabase.from('devices').update({
-        activated: false,
-        updated_at: new Date().toISOString(),
-      }).eq('id', deviceId).eq('rep_id', repId);
+      await supabase.from('devices').update({ activated: false, updated_at: new Date().toISOString() }).eq('id', deviceId).eq('rep_id', repId);
       return json({ success: true });
     }
 
@@ -362,13 +220,7 @@ Deno.serve(async (req) => {
       const { deviceId, repId, repPassword, reason } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       const now = new Date().toISOString();
-      await supabase.from('devices').update({
-        activated: false,
-        blocked_reason: 'manual',
-        block_reason_detail: reason || 'Bloqueado pelo representante',
-        blocked_at: now,
-        updated_at: now,
-      }).eq('id', deviceId).eq('rep_id', repId);
+      await supabase.from('devices').update({ activated: false, blocked_reason: 'manual', block_reason_detail: reason || 'Bloqueado pelo representante', blocked_at: now, updated_at: now }).eq('id', deviceId).eq('rep_id', repId);
       return json({ success: true });
     }
 
@@ -376,13 +228,7 @@ Deno.serve(async (req) => {
       const { deviceId, repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       const now = new Date().toISOString();
-      await supabase.from('devices').update({
-        activated: true,
-        blocked_reason: null,
-        block_reason_detail: null,
-        blocked_at: null,
-        updated_at: now,
-      }).eq('id', deviceId).eq('rep_id', repId);
+      await supabase.from('devices').update({ activated: true, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('id', deviceId).eq('rep_id', repId);
       return json({ success: true });
     }
 
@@ -398,58 +244,20 @@ Deno.serve(async (req) => {
       const { deviceId, repId, repPassword, days } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!deviceId || !days) throw new Error('Dados incompletos');
-
       const daysNum = Math.max(1, parseInt(days));
       const creditCost = computeCreditCost(daysNum);
-
-      const { data: device } = await supabase
-        .from('devices')
-        .select('id, expires_at, mac_address')
-        .eq('id', deviceId)
-        .eq('rep_id', repId)
-        .maybeSingle();
+      const { data: device } = await supabase.from('devices').select('id, expires_at, mac_address').eq('id', deviceId).eq('rep_id', repId).maybeSingle();
       if (!device) throw new Error('Dispositivo não encontrado na sua rede');
-
-      const { data: rep } = await supabase
-        .from('representatives')
-        .select('credits')
-        .eq('id', repId)
-        .single();
+      const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
-      if (rep.credits < creditCost) {
-        throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta renovação custa ${creditCost.toFixed(2)}.`);
-      }
-
-      const baseDate = device.expires_at && new Date(device.expires_at) > new Date()
-        ? new Date(device.expires_at)
-        : new Date();
+      if (rep.credits < creditCost) throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta renovação custa ${creditCost.toFixed(2)}.`);
+      const baseDate = device.expires_at && new Date(device.expires_at) > new Date() ? new Date(device.expires_at) : new Date();
       baseDate.setDate(baseDate.getDate() + daysNum);
       const newExpiry = baseDate.toISOString();
       const now = new Date().toISOString();
-
-      await supabase.from('devices').update({
-        expires_at: newExpiry,
-        activated: true,
-        blocked_reason: null,
-        block_reason_detail: null,
-        blocked_at: null,
-        updated_at: now,
-      }).eq('id', deviceId);
-
-      await supabase.from('representatives').update({
-        credits: rep.credits - creditCost,
-        updated_at: now,
-      }).eq('id', repId);
-
-      await supabase.from('credit_transactions').insert({
-        rep_id: repId,
-        amount: Math.ceil(creditCost),
-        type: 'consume',
-        description: `Renovação ${daysNum}d — ${device.mac_address} (custo real: ${creditCost.toFixed(2)} cr.)`,
-        device_mac: device.mac_address,
-        days: daysNum,
-      });
-
+      await supabase.from('devices').update({ expires_at: newExpiry, activated: true, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('id', deviceId);
+      await supabase.from('representatives').update({ credits: rep.credits - creditCost, updated_at: now }).eq('id', repId);
+      await supabase.from('credit_transactions').insert({ rep_id: repId, amount: Math.ceil(creditCost), type: 'consume', description: `Renovação ${daysNum}d — ${device.mac_address} (custo real: ${creditCost.toFixed(2)} cr.)`, device_mac: device.mac_address, days: daysNum });
       return json({ success: true, new_expiry: newExpiry, credit_cost: creditCost });
     }
 
@@ -457,56 +265,21 @@ Deno.serve(async (req) => {
       const { deviceId, repId, repPassword, sourceId } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!deviceId || !sourceId) throw new Error('Dados incompletos');
-
-      const { data: source } = await supabase
-        .from('sources')
-        .select('*')
-        .eq('id', sourceId)
-        .eq('rep_id', repId)
-        .maybeSingle();
+      const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).eq('rep_id', repId).maybeSingle();
       if (!source) throw new Error('Fonte não encontrada ou não pertence a este representante');
-
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase
-        .from('plans')
-        .select('id')
-        .eq('server_url', source.server_url)
-        .eq('xtream_username', source.xtream_username)
-        .maybeSingle();
-      if (existingPlan) {
-        planId = existingPlan.id;
-      } else {
-        const { data: newPlan } = await supabase
-          .from('plans')
-          .insert({
-            name: source.name,
-            server_url: source.server_url,
-            xtream_username: source.xtream_username,
-            xtream_password: source.xtream_password,
-            max_macs: source.max_connections,
-          })
-          .select('id')
-          .single();
-        planId = newPlan?.id ?? null;
-      }
-
-      const { error } = await supabase.from('devices').update({
-        source_id: sourceId,
-        plan_id: planId,
-        updated_at: new Date().toISOString(),
-      }).eq('id', deviceId).eq('rep_id', repId);
+      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      if (existingPlan) { planId = existingPlan.id; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
+      const { error } = await supabase.from('devices').update({ source_id: sourceId, plan_id: planId, updated_at: new Date().toISOString() }).eq('id', deviceId).eq('rep_id', repId);
       if (error) throw error;
-
       return json({ success: true, source_name: source.name });
     }
 
     if (action === 'updateRepDevicePrice') {
       const { deviceId, repId, repPassword, price } = body;
       if (!await validateRep(repId, repPassword)) return authError();
-      const { error } = await supabase.from('devices').update({
-        price: price != null ? parseFloat(String(price)) : null,
-        updated_at: new Date().toISOString(),
-      }).eq('id', deviceId).eq('rep_id', repId);
+      const { error } = await supabase.from('devices').update({ price: price != null ? parseFloat(String(price)) : null, updated_at: new Date().toISOString() }).eq('id', deviceId).eq('rep_id', repId);
       if (error) throw error;
       return json({ success: true });
     }
@@ -516,48 +289,115 @@ Deno.serve(async (req) => {
       if (!await validateRep(repId, repPassword)) return authError();
       if (!mac) return json({ found: false });
       const normalizedMac = normalizeMac(mac);
-      const { data: dev } = await supabase
-        .from('devices')
-        .select('client_name, email, mac_address')
-        .eq('mac_address', normalizedMac)
-        .maybeSingle();
+      const { data: dev } = await supabase.from('devices').select('client_name, email, mac_address').eq('mac_address', normalizedMac).maybeSingle();
       if (!dev) return json({ found: false });
       return json({ found: true, client_name: dev.client_name || '', email: dev.email || '' });
     }
 
-    // ── Admin-auth check ──────────────────────────────────────────────────────
+    // ── Admin auth — resolve identity ─────────────────────────────────────────
+    // Sub-admins pass adminId + adminSecret; root admin passes adminPassword
+    const { adminId, adminSecret } = body;
+    let resolvedAdminId: string | null = null;
 
-    const isAdminAction = adminPassword !== undefined;
-    if (isAdminAction && adminPassword !== ADMIN_PASSWORD) {
-      return new Response(JSON.stringify({ error: 'Senha incorreta.' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+    if (adminId && adminSecret) {
+      const { data: subAdm } = await supabase
+        .from('admins')
+        .select('id, parent_id, active')
+        .eq('id', adminId)
+        .eq('password_hash', adminSecret)
+        .eq('active', true)
+        .not('parent_id', 'is', null)
+        .maybeSingle();
+      if (!subAdm) {
+        return new Response(JSON.stringify({ error: 'Credenciais de sub-admin inválidas.' }), {
+          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      resolvedAdminId = subAdm.id;
+    } else {
+      const isAdminAction = adminPassword !== undefined;
+      if (isAdminAction && adminPassword !== ADMIN_PASSWORD) {
+        return new Response(JSON.stringify({ error: 'Senha incorreta.' }), {
+          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      resolvedAdminId = null; // root admin — no isolation
+    }
+
+    // ── Sub-admin management (root admin only) ────────────────────────────────
+
+    if (action === 'getSubAdmins') {
+      if (resolvedAdminId) return json({ error: 'Apenas o admin root pode gerenciar sub-admins.' });
+      const { data: admins, error } = await supabase
+        .from('admins')
+        .select('id, username, name, active, notes, created_at, parent_id')
+        .not('parent_id', 'is', null)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return json({ admins: admins || [] });
+    }
+
+    if (action === 'createSubAdmin') {
+      if (resolvedAdminId) return json({ error: 'Apenas o admin root pode criar sub-admins.' });
+      const { username, password, name, notes } = body;
+      if (!username || !password || !name) throw new Error('Usuário, senha e nome obrigatórios');
+      const { data: existing } = await supabase.from('admins').select('id').is('parent_id', null).limit(1).maybeSingle();
+      let rootId = existing?.id;
+      if (!rootId) {
+        const { data: root } = await supabase.from('admins').insert({ username: 'root', password_hash: ADMIN_PASSWORD, name: 'Admin Principal', parent_id: null }).select('id').single();
+        rootId = root?.id;
+      }
+      const { data: newAdmin, error } = await supabase.from('admins').insert({
+        username: username.trim().toLowerCase(),
+        password_hash: password,
+        name: name.trim(),
+        parent_id: rootId,
+        notes: notes || null,
+      }).select().single();
+      if (error) throw error;
+      return json({ admin: newAdmin });
+    }
+
+    if (action === 'updateSubAdmin') {
+      if (resolvedAdminId) return json({ error: 'Apenas o admin root pode editar sub-admins.' });
+      const { id, name, password, active, notes } = body;
+      const updates: any = { updated_at: new Date().toISOString() };
+      if (name) updates.name = name;
+      if (password) updates.password_hash = password;
+      if (active !== undefined) updates.active = active;
+      if (notes !== undefined) updates.notes = notes;
+      const { error } = await supabase.from('admins').update(updates).eq('id', id).not('parent_id', 'is', null);
+      if (error) throw error;
+      return json({ success: true });
+    }
+
+    if (action === 'deleteSubAdmin') {
+      if (resolvedAdminId) return json({ error: 'Apenas o admin root pode excluir sub-admins.' });
+      const { id } = body;
+      await Promise.all([
+        supabase.from('representatives').update({ admin_id: null }).eq('admin_id', id),
+        supabase.from('sources').update({ admin_id: null }).eq('admin_id', id),
+        supabase.from('devices').update({ admin_id: null }).eq('admin_id', id),
+      ]);
+      const { error } = await supabase.from('admins').delete().eq('id', id).not('parent_id', 'is', null);
+      if (error) throw error;
+      return json({ success: true });
     }
 
     // ── Admin-only: Rep management ────────────────────────────────────────────
 
     if (action === 'getRepresentatives') {
-      const { data: reps, error } = await supabase
-        .from('representatives')
-        .select('*')
-        .order('rep_number', { ascending: true });
+      const query = supabase.from('representatives').select('*').order('rep_number', { ascending: true });
+      const { data: reps, error } = resolvedAdminId
+        ? await query.eq('admin_id', resolvedAdminId)
+        : await query;
       if (error) throw error;
-
       const withStats = await Promise.all((reps || []).map(async (r: any) => {
-        const { count: activeDevices } = await supabase
-          .from('devices')
-          .select('*', { count: 'exact', head: true })
-          .eq('rep_id', r.id)
-          .eq('activated', true);
-        const { data: consumed } = await supabase
-          .from('credit_transactions')
-          .select('amount')
-          .eq('rep_id', r.id)
-          .eq('type', 'consume');
+        const { count: activeDevices } = await supabase.from('devices').select('*', { count: 'exact', head: true }).eq('rep_id', r.id).eq('activated', true);
+        const { data: consumed } = await supabase.from('credit_transactions').select('amount').eq('rep_id', r.id).eq('type', 'consume');
         const totalConsumed = (consumed || []).reduce((s: number, t: any) => s + t.amount, 0);
         return { ...r, active_devices: activeDevices || 0, total_consumed: totalConsumed };
       }));
-
       return json({ representatives: withStats });
     }
 
@@ -566,9 +406,8 @@ Deno.serve(async (req) => {
       if (!name || !rep_number || !password) throw new Error('Nome, número e senha obrigatórios');
       const { data: rep, error } = await supabase
         .from('representatives')
-        .insert({ name, rep_number, password_hash: password, credits: credits || 0, notes: notes || null })
-        .select()
-        .single();
+        .insert({ name, rep_number, password_hash: password, credits: credits || 0, notes: notes || null, admin_id: resolvedAdminId })
+        .select().single();
       if (error) throw error;
       return json({ representative: rep });
     }
@@ -598,16 +437,8 @@ Deno.serve(async (req) => {
       const { repId, amount, description } = body;
       const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
-      await supabase.from('representatives').update({
-        credits: rep.credits + amount,
-        updated_at: new Date().toISOString(),
-      }).eq('id', repId);
-      await supabase.from('credit_transactions').insert({
-        rep_id: repId,
-        amount,
-        type: 'add',
-        description: description || 'Créditos adicionados pelo admin',
-      });
+      await supabase.from('representatives').update({ credits: rep.credits + amount, updated_at: new Date().toISOString() }).eq('id', repId);
+      await supabase.from('credit_transactions').insert({ rep_id: repId, amount, type: 'add', description: description || 'Créditos adicionados pelo admin' });
       return json({ success: true });
     }
 
@@ -617,43 +448,26 @@ Deno.serve(async (req) => {
       const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
       const newCredits = Math.max(0, rep.credits - amount);
-      await supabase.from('representatives').update({
-        credits: newCredits,
-        updated_at: new Date().toISOString(),
-      }).eq('id', repId);
-      await supabase.from('credit_transactions').insert({
-        rep_id: repId,
-        amount: -amount,
-        type: 'consume',
-        description: description || 'Créditos removidos pelo admin',
-      });
+      await supabase.from('representatives').update({ credits: newCredits, updated_at: new Date().toISOString() }).eq('id', repId);
+      await supabase.from('credit_transactions').insert({ rep_id: repId, amount: -amount, type: 'consume', description: description || 'Créditos removidos pelo admin' });
       return json({ success: true, new_balance: newCredits });
     }
 
     if (action === 'getCreditTransactions') {
       const { repId } = body;
-      const { data: transactions, error } = await supabase
-        .from('credit_transactions')
-        .select('*')
-        .eq('rep_id', repId)
-        .order('created_at', { ascending: false })
-        .limit(50);
+      const { data: transactions, error } = await supabase.from('credit_transactions').select('*').eq('rep_id', repId).order('created_at', { ascending: false }).limit(50);
       if (error) throw error;
       return json({ transactions: transactions || [] });
     }
 
     if (action === 'getSources') {
-      const { data: sources, error } = await supabase
-        .from('sources')
-        .select('*, representatives(name)')
-        .order('created_at', { ascending: false });
+      const baseQuery = supabase.from('sources').select('*, representatives(name)').order('created_at', { ascending: false });
+      const { data: sources, error } = resolvedAdminId
+        ? await baseQuery.eq('admin_id', resolvedAdminId)
+        : await baseQuery;
       if (error) throw error;
       const withCount = await Promise.all((sources || []).map(async (s: any) => {
-        const { count } = await supabase
-          .from('devices')
-          .select('*', { count: 'exact', head: true })
-          .eq('source_id', s.id)
-          .eq('activated', true);
+        const { count } = await supabase.from('devices').select('*', { count: 'exact', head: true }).eq('source_id', s.id).eq('activated', true);
         return { ...s, active_macs: count || 0, rep_name: s.representatives?.name };
       }));
       return json({ sources: withCount });
@@ -664,9 +478,8 @@ Deno.serve(async (req) => {
       if (!name || !server_url || !xtream_username || !xtream_password) throw new Error('Campos obrigatórios faltando');
       const { data: source, error } = await supabase
         .from('sources')
-        .insert({ name, server_url, xtream_username, xtream_password, max_connections: max_connections || 5, rep_id: rep_id || null, notes: notes || null })
-        .select()
-        .single();
+        .insert({ name, server_url, xtream_username, xtream_password, max_connections: max_connections || 5, rep_id: rep_id || null, notes: notes || null, admin_id: resolvedAdminId })
+        .select().single();
       if (error) throw error;
       return json({ source });
     }
@@ -689,13 +502,19 @@ Deno.serve(async (req) => {
       return json({ success: true });
     }
 
-    // ── Existing admin device actions ─────────────────────────────────────────
+    // ── Device actions ────────────────────────────────────────────────────────
 
     if (action === 'get_devices') {
-      const { data: devices, error } = await supabase
-        .from('devices')
-        .select('*, plans(id, name, server_url), representatives(rep_number, name)')
-        .order('created_at', { ascending: false });
+      const baseQ = supabase.from('devices').select('*, plans(id, name, server_url), representatives(rep_number, name)').order('created_at', { ascending: false });
+      let devQuery;
+      if (resolvedAdminId) {
+        const { data: adminReps } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
+        const repIds = (adminReps || []).map((r: any) => r.id);
+        devQuery = repIds.length > 0
+          ? baseQ.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${repIds.join(',')})`)
+          : baseQ.eq('admin_id', resolvedAdminId);
+      } else { devQuery = baseQ; }
+      const { data: devices, error } = await devQuery;
       if (error) throw error;
       return json({ devices });
     }
@@ -704,34 +523,22 @@ Deno.serve(async (req) => {
       const { data } = body;
       const { deviceId, planId, expiresAt } = data;
       const now = new Date().toISOString();
-      const { error } = await supabase.from('devices').update({
-        activated: true, plan_id: planId, activated_at: now,
-        expires_at: expiresAt || null, blocked_reason: null,
-        block_reason_detail: null, blocked_at: null, updated_at: now,
-      }).eq('id', deviceId);
+      const { error } = await supabase.from('devices').update({ activated: true, plan_id: planId, activated_at: now, expires_at: expiresAt || null, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('id', deviceId);
       if (error) throw error;
       return json({ success: true });
     }
 
     if (action === 'deactivate_device') {
       const { data } = body;
-      const { deviceId } = data;
-      const { error } = await supabase.from('devices').update({
-        activated: false, blocked_reason: null,
-        block_reason_detail: null, updated_at: new Date().toISOString(),
-      }).eq('id', deviceId);
+      const { error } = await supabase.from('devices').update({ activated: false, blocked_reason: null, block_reason_detail: null, updated_at: new Date().toISOString() }).eq('id', data.deviceId);
       if (error) throw error;
       return json({ success: true });
     }
 
     if (action === 'block_device') {
       const { data } = body;
-      const { deviceId, reasonDetail } = data;
       const now = new Date().toISOString();
-      const { error } = await supabase.from('devices').update({
-        activated: false, blocked_reason: 'manual', block_reason_detail: reasonDetail || null,
-        blocked_at: now, updated_at: now,
-      }).eq('id', deviceId);
+      const { error } = await supabase.from('devices').update({ activated: false, blocked_reason: 'manual', block_reason_detail: data.reasonDetail || null, blocked_at: now, updated_at: now }).eq('id', data.deviceId);
       if (error) throw error;
       return json({ success: true });
     }
@@ -783,11 +590,7 @@ Deno.serve(async (req) => {
       const { data } = body;
       const graceExpiry = new Date();
       graceExpiry.setDate(graceExpiry.getDate() + 3);
-      const { error } = await supabase.from('devices').update({
-        activated: true, expires_at: graceExpiry.toISOString(), blocked_reason: null,
-        block_reason_detail: null, blocked_at: null, grace_period_used: true,
-        updated_at: new Date().toISOString(),
-      }).eq('id', data.deviceId);
+      const { error } = await supabase.from('devices').update({ activated: true, expires_at: graceExpiry.toISOString(), blocked_reason: null, block_reason_detail: null, blocked_at: null, grace_period_used: true, updated_at: new Date().toISOString() }).eq('id', data.deviceId);
       if (error) throw error;
       return json({ success: true });
     }
@@ -828,29 +631,47 @@ Deno.serve(async (req) => {
     if (action === 'get_stats') {
       const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      let scopeRepIds: string[] = [];
+      if (resolvedAdminId) {
+        const { data: ar } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
+        scopeRepIds = (ar || []).map((r: any) => r.id);
+      }
+      const addScope = (q: any) => {
+        if (!resolvedAdminId) return q;
+        if (scopeRepIds.length > 0) return q.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${scopeRepIds.join(',')})`);
+        return q.eq('admin_id', resolvedAdminId);
+      };
       const [
         { count: total }, { count: active }, { count: blocked },
         { count: newToday }, { count: online }, { count: plans }, { count: watching }
       ] = await Promise.all([
-        supabase.from('devices').select('*', { count: 'exact', head: true }),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).eq('activated', true),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).not('blocked_reason', 'is', null),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString()),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).gte('last_seen_at', fiveMinAgo),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true })),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).eq('activated', true)),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).not('blocked_reason', 'is', null)),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).gte('created_at', todayStart.toISOString())),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).gte('last_seen_at', fiveMinAgo)),
         supabase.from('plans').select('*', { count: 'exact', head: true }).eq('active', true),
-        supabase.from('devices').select('*', { count: 'exact', head: true }).not('current_content', 'is', null).gte('current_content_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()),
+        addScope(supabase.from('devices').select('*', { count: 'exact', head: true }).not('current_content', 'is', null).gte('current_content_at', new Date(Date.now() - 30 * 60 * 1000).toISOString())),
       ]);
       return json({ stats: { total: total || 0, active: active || 0, pending: (total || 0) - (active || 0) - (blocked || 0), blocked: blocked || 0, newToday: newToday || 0, online: online || 0, plans: plans || 0, watching: watching || 0 } });
     }
 
     if (action === 'get_watching_now') {
       const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const { data: watching, error } = await supabase
+      let watchQ = supabase
         .from('devices')
-        .select('id, email, mac_address, device_name, platform, current_content, current_content_type, current_content_at, last_seen_at, client_name, rep_id')
+        .select('id, email, mac_address, device_name, platform, current_content, current_content_type, current_content_at, last_seen_at, client_name, rep_id, admin_id')
         .not('current_content', 'is', null)
         .gte('current_content_at', thirtyMinAgo)
         .order('current_content_at', { ascending: false });
+      if (resolvedAdminId) {
+        const { data: ar } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
+        const repIds = (ar || []).map((r: any) => r.id);
+        watchQ = (repIds.length > 0
+          ? watchQ.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${repIds.join(',')})`)
+          : watchQ.eq('admin_id', resolvedAdminId)) as any;
+      }
+      const { data: watching, error } = await watchQ;
       if (error) throw error;
       return json({ watching: watching || [] });
     }
@@ -883,9 +704,9 @@ Deno.serve(async (req) => {
       const now = new Date().toISOString();
       const { data: existing } = await supabase.from('devices').select('id').eq('mac_address', normalizedMac).maybeSingle();
       if (existing) {
-        await supabase.from('devices').update({ email: normalizedEmail, plan_id: planId, activated: true, activated_at: now, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('mac_address', normalizedMac);
+        await supabase.from('devices').update({ email: normalizedEmail, plan_id: planId, activated: true, activated_at: now, blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now, admin_id: resolvedAdminId }).eq('mac_address', normalizedMac);
       } else {
-        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: normalizedMac, plan_id: planId, activated: true, activated_at: now, device_name: 'Pré-autorizado', platform: 'unknown', last_seen_at: now });
+        await supabase.from('devices').insert({ email: normalizedEmail, mac_address: normalizedMac, plan_id: planId, activated: true, activated_at: now, device_name: 'Pré-autorizado', platform: 'unknown', last_seen_at: now, admin_id: resolvedAdminId });
       }
       return json({ success: true });
     }

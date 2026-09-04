@@ -9,6 +9,29 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 let _adminPassword = '';
 export function setAdminPassword(pwd: string) { _adminPassword = pwd; }
 
+// Sub-admin session (set after sub-admin login)
+let _subAdminId = '';
+let _subAdminSecret = '';
+export function setSubAdminCredentials(id: string, secret: string) {
+  _subAdminId = id;
+  _subAdminSecret = secret;
+}
+export function clearSubAdminCredentials() {
+  _subAdminId = '';
+  _subAdminSecret = '';
+}
+export function isSubAdminSession() { return !!_subAdminId; }
+
+export interface SubAdmin {
+  id: string;
+  username: string;
+  name: string;
+  parent_id: string;
+  active: boolean;
+  notes?: string | null;
+  created_at?: string;
+}
+
 export interface Device {
   id: string;
   email: string;
@@ -93,8 +116,12 @@ export interface WatchingDevice {
 
 async function call(action: string, data?: object): Promise<any> {
   const supabase = getSupabaseClient();
+  // Use sub-admin credentials if active, otherwise root admin password
+  const authPayload = _subAdminId
+    ? { adminId: _subAdminId, adminSecret: _subAdminSecret }
+    : { adminPassword: _adminPassword };
   const { data: result, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, adminPassword: _adminPassword, data },
+    body: { action, ...authPayload, data },
   });
 
   if (error) {
@@ -228,6 +255,46 @@ export async function preAuthorizeEmail(email: string, planId: string, macAddres
   await call('pre_authorize_email', { email, planId, macAddress });
 }
 
+// ── Sub-admin management (root admin only) ────────────────────
+export async function getSubAdmins(): Promise<SubAdmin[]> {
+  const supabase = getSupabaseClient();
+  const { data: result } = await supabase.functions.invoke('admin-api', {
+    body: { action: 'getSubAdmins', adminPassword: _adminPassword },
+  });
+  return result?.admins || [];
+}
+
+export async function createSubAdmin(params: { username: string; password: string; name: string; notes?: string }): Promise<SubAdmin> {
+  const supabase = getSupabaseClient();
+  const { data: result } = await supabase.functions.invoke('admin-api', {
+    body: { action: 'createSubAdmin', adminPassword: _adminPassword, ...params },
+  });
+  return result?.admin;
+}
+
+export async function updateSubAdmin(id: string, updates: { name?: string; password?: string; active?: boolean; notes?: string }): Promise<void> {
+  const supabase = getSupabaseClient();
+  await supabase.functions.invoke('admin-api', {
+    body: { action: 'updateSubAdmin', adminPassword: _adminPassword, id, ...updates },
+  });
+}
+
+export async function deleteSubAdmin(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  await supabase.functions.invoke('admin-api', {
+    body: { action: 'deleteSubAdmin', adminPassword: _adminPassword, id },
+  });
+}
+
+export async function subAdminLogin(username: string, password: string): Promise<{ ok: boolean; admin?: SubAdmin; error?: string }> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.functions.invoke('admin-api', {
+    body: { action: 'subAdminLogin', username, password },
+  });
+  if (error || !data?.ok) return { ok: false, error: data?.error || 'Erro ao autenticar' };
+  return { ok: true, admin: data.admin };
+}
+
 // ── Content tracking (called from player, no admin password) ─
 export async function updateCurrentContent(
   macAddress: string,
@@ -235,10 +302,13 @@ export async function updateCurrentContent(
   contentType: string | null
 ): Promise<void> {
   const supabase = getSupabaseClient();
+  // Send flat body (no data wrapper) so edge function gets mac_address directly
   await supabase.functions.invoke('admin-api', {
     body: {
       action: 'update_current_content',
-      data: { mac_address: macAddress, content, content_type: contentType },
+      mac_address: macAddress,
+      content,
+      content_type: contentType,
     },
   });
 }
