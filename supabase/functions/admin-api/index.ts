@@ -12,6 +12,13 @@ function normalizeMac(mac: string): string {
   return hex.match(/.{2}/g)!.join(':');
 }
 
+/** Generate a secure random session token */
+function generateSessionToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -85,7 +92,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, repId: rep.id, repName: rep.name });
     }
 
-    // ── Sub-admin login ───────────────────────────────────────────────────────
+    // ── Sub-admin login — returns session token, never re-sends password ──────
 
     if (action === 'subAdminLogin') {
       const { username, password } = body;
@@ -99,7 +106,20 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (!adm) return json({ ok: false, error: 'Sub-admin não encontrado' });
       if (adm.password_hash !== password) return json({ ok: false, error: 'Senha incorreta' });
-      return json({ ok: true, admin: { id: adm.id, name: adm.name, username: adm.username, parent_id: adm.parent_id } });
+
+      // Generate session token — expires in 24h
+      const token = generateSessionToken();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await supabase.from('admins').update({
+        session_token: token,
+        session_expires_at: expiresAt,
+      }).eq('id', adm.id);
+
+      return json({
+        ok: true,
+        admin: { id: adm.id, name: adm.name, username: adm.username, parent_id: adm.parent_id },
+        sessionToken: token,
+      });
     }
 
     // ── Helper functions ──────────────────────────────────────────────────────
@@ -157,7 +177,6 @@ Deno.serve(async (req) => {
       if (!await validateRep(repId, repPassword)) return authError();
       if (!repId || !mac || !sourceId || !days) throw new Error('Dados incompletos');
       const normalizedMac = normalizeMac(mac);
-      // Fetch rep with admin_id — used to tag device and plan for isolation
       const { data: rep } = await supabase.from('representatives').select('credits, admin_id').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
       const repAdminId: string | null = rep.admin_id ?? null;
@@ -165,7 +184,6 @@ Deno.serve(async (req) => {
       if (rep.credits < creditCost) throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
       const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).single();
       if (!source) throw new Error('Fonte não encontrada');
-      // Match plan scoped to same admin
       let planId: string | null = null;
       const planMatchQ = supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username);
       const { data: existingPlan } = repAdminId
@@ -185,7 +203,6 @@ Deno.serve(async (req) => {
       const normalizedEmail = email ? email.toLowerCase().trim() : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
       const { data: existingDev } = await supabase.from('devices').select('id').eq('mac_address', normalizedMac).maybeSingle();
       if (existingDev) {
-        // Update existing device — set admin_id so it's correctly scoped to the rep's admin
         await supabase.from('devices').update({
           email: normalizedEmail, client_name: clientName || null, plan_id: planId, source_id: sourceId,
           package_type: packageType, rep_id: repId, admin_id: repAdminId,
@@ -193,7 +210,6 @@ Deno.serve(async (req) => {
           blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now
         }).eq('mac_address', normalizedMac);
       } else {
-        // Insert new device — tag with rep's admin_id for isolation
         await supabase.from('devices').insert({
           email: normalizedEmail, mac_address: normalizedMac, client_name: clientName || null,
           plan_id: planId, source_id: sourceId, package_type: packageType, rep_id: repId,
@@ -371,21 +387,31 @@ Deno.serve(async (req) => {
     }
 
     // ── Admin auth — resolve identity ─────────────────────────────────────────
-    // Sub-admins pass adminId + adminSecret; root admin passes adminPassword
-    const { adminId, adminSecret } = body;
+    //
+    // Sub-admins: pass adminId + sessionToken (issued at login, never the raw password)
+    // Root admin: pass adminPassword (env var, never stored in app)
+    //
+    const { adminId, sessionToken } = body;
     let resolvedAdminId: string | null = null;
 
-    if (adminId && adminSecret) {
+    if (adminId && sessionToken) {
+      // Validate session token — must exist, not expired, belong to a sub-admin
       const { data: subAdm } = await supabase
         .from('admins')
-        .select('id, parent_id, active')
+        .select('id, parent_id, active, session_expires_at')
         .eq('id', adminId)
-        .eq('password_hash', adminSecret)
+        .eq('session_token', sessionToken)
         .eq('active', true)
         .not('parent_id', 'is', null)
         .maybeSingle();
       if (!subAdm) {
-        return new Response(JSON.stringify({ error: 'Credenciais de sub-admin inválidas.' }), {
+        return new Response(JSON.stringify({ error: 'Sessão inválida. Faça login novamente.' }), {
+          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      // Check token expiry
+      if (subAdm.session_expires_at && new Date(subAdm.session_expires_at) < new Date()) {
+        return new Response(JSON.stringify({ error: 'Sessão expirada. Faça login novamente.' }), {
           status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
@@ -401,31 +427,16 @@ Deno.serve(async (req) => {
     }
 
     // ── Scope helpers ─────────────────────────────────────────────────────────
-    //
-    // ISOLATION STRATEGY:
-    //   Root admin  → admin_id IS NULL  (all existing data belongs here)
-    //   Sub-admin   → admin_id = subAdminId  (new records created by sub-admin)
-    //
-    // For devices: root admin reps have admin_id=NULL, their devices have admin_id=NULL.
-    // Sub-admin reps have admin_id=subAdminId, their devices also get admin_id=subAdminId.
-    // Querying by admin_id alone is sufficient and safe.
 
-    /** Returns scoped device query: root admin = admin_id IS NULL, sub-admin = admin_id = their ID */
     function scopeDevices(q: any) {
       return resolvedAdminId ? q.eq('admin_id', resolvedAdminId) : q.is('admin_id', null);
     }
-
-    /** Returns scoped rep query */
     function scopeReps(q: any) {
       return resolvedAdminId ? q.eq('admin_id', resolvedAdminId) : q.is('admin_id', null);
     }
-
-    /** Returns scoped source query */
     function scopeSources(q: any) {
       return resolvedAdminId ? q.eq('admin_id', resolvedAdminId) : q.is('admin_id', null);
     }
-
-    /** Returns scoped plan query */
     function scopePlans(q: any) {
       return resolvedAdminId ? q.eq('admin_id', resolvedAdminId) : q.is('admin_id', null);
     }
@@ -471,6 +482,11 @@ Deno.serve(async (req) => {
       if (password) updates.password_hash = password;
       if (active !== undefined) updates.active = active;
       if (notes !== undefined) updates.notes = notes;
+      // Invalidate session when password changes
+      if (password) {
+        updates.session_token = null;
+        updates.session_expires_at = null;
+      }
       const { error } = await supabase.from('admins').update(updates).eq('id', id).not('parent_id', 'is', null);
       if (error) throw error;
       return json({ success: true });
@@ -479,7 +495,6 @@ Deno.serve(async (req) => {
     if (action === 'deleteSubAdmin') {
       if (resolvedAdminId) return json({ error: 'Apenas o admin root pode excluir sub-admins.' });
       const { id } = body;
-      // Reassign orphaned records back to root (admin_id=null) so they don't disappear
       await Promise.all([
         supabase.from('representatives').update({ admin_id: null }).eq('admin_id', id),
         supabase.from('sources').update({ admin_id: null }).eq('admin_id', id),
@@ -836,7 +851,6 @@ Deno.serve(async (req) => {
     if (action === 'pre_authorize_email') {
       const { data } = body;
       const { email, planId, macAddress } = data;
-      // Verify plan belongs to this admin
       if (planId) {
         const { data: planCheck } = await scopePlans(
           supabase.from('plans').select('id').eq('id', planId)

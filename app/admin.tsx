@@ -182,10 +182,10 @@ export default function AdminScreen() {
       if (loginMode === 'subadmin') {
         if (!subAdminUsername.trim()) { setPasswordError('Digite o usuário'); setLoading(false); return; }
         const result = await subAdminLogin(subAdminUsername.trim(), pwd);
-        if (!result.ok || !result.admin) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
-        // Set credentials BEFORE any data fetching
-        setSubAdminCredentials(result.admin.id, pwd);
-        setRepSubAdminCredentials(result.admin.id, pwd);
+        if (!result.ok || !result.admin || !result.sessionToken) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
+        // Store session TOKEN (not password) — password never leaves this function
+        setSubAdminCredentials(result.admin.id, result.sessionToken);
+        setRepSubAdminCredentials(result.admin.id, result.sessionToken);
         setCurrentSubAdmin(result.admin);
         setIsSubAdmin(true);
         setAuthenticated(true);

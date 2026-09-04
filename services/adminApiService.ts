@@ -9,16 +9,16 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 let _adminPassword = '';
 export function setAdminPassword(pwd: string) { _adminPassword = pwd; }
 
-// Sub-admin session (set after sub-admin login)
+// Sub-admin session — stores session token (NOT password) issued by server at login
 let _subAdminId = '';
-let _subAdminSecret = '';
-export function setSubAdminCredentials(id: string, secret: string) {
+let _subAdminToken = '';
+export function setSubAdminCredentials(id: string, token: string) {
   _subAdminId = id;
-  _subAdminSecret = secret;
+  _subAdminToken = token;
 }
 export function clearSubAdminCredentials() {
   _subAdminId = '';
-  _subAdminSecret = '';
+  _subAdminToken = '';
 }
 export function isSubAdminSession() { return !!_subAdminId; }
 
@@ -116,9 +116,10 @@ export interface WatchingDevice {
 
 async function call(action: string, data?: object): Promise<any> {
   const supabase = getSupabaseClient();
-  // Use sub-admin credentials if active, otherwise root admin password
+  // Sub-admins: send adminId + sessionToken (token issued at login, never the raw password)
+  // Root admin: send adminPassword (env-var secret, never stored in app source)
   const authPayload = _subAdminId
-    ? { adminId: _subAdminId, adminSecret: _subAdminSecret }
+    ? { adminId: _subAdminId, sessionToken: _subAdminToken }
     : { adminPassword: _adminPassword };
   const { data: result, error } = await supabase.functions.invoke('admin-api', {
     body: { action, ...authPayload, data },
@@ -286,13 +287,14 @@ export async function deleteSubAdmin(id: string): Promise<void> {
   });
 }
 
-export async function subAdminLogin(username: string, password: string): Promise<{ ok: boolean; admin?: SubAdmin; error?: string }> {
+export async function subAdminLogin(username: string, password: string): Promise<{ ok: boolean; admin?: SubAdmin; sessionToken?: string; error?: string }> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.functions.invoke('admin-api', {
     body: { action: 'subAdminLogin', username, password },
   });
   if (error || !data?.ok) return { ok: false, error: data?.error || 'Erro ao autenticar' };
-  return { ok: true, admin: data.admin };
+  // Server returns a session token — password is never stored or re-sent
+  return { ok: true, admin: data.admin, sessionToken: data.sessionToken };
 }
 
 // ── Content tracking (called from player, no admin password) ─
