@@ -159,16 +159,22 @@ Deno.serve(async (req) => {
       if (!await validateRep(repId, repPassword)) return authError();
       if (!repId || !mac || !sourceId || !days) throw new Error('Dados incompletos');
       const normalizedMac = normalizeMac(mac);
-      const { data: rep } = await supabase.from('representatives').select('credits').eq('id', repId).single();
+      // Fetch rep with admin_id so auto-created plans are tagged to the correct admin
+      const { data: rep } = await supabase.from('representatives').select('credits, admin_id').eq('id', repId).single();
       if (!rep) throw new Error('Representante não encontrado');
+      const repAdminId: string | null = rep.admin_id ?? null;
       const creditCost = computeCreditCost(parseInt(days));
       if (rep.credits < creditCost) throw new Error(`Créditos insuficientes. Você tem ${rep.credits} crédito(s), esta ativação custa ${creditCost.toFixed(2)}.`);
       const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).single();
       if (!source) throw new Error('Fonte não encontrada');
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      // Match existing plan scoped to the same admin to avoid cross-admin plan sharing
+      const planMatchQ = supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username);
+      const { data: existingPlan } = repAdminId
+        ? await planMatchQ.eq('admin_id', repAdminId).maybeSingle()
+        : await planMatchQ.is('admin_id', null).maybeSingle();
       if (existingPlan) { planId = existingPlan.id; }
-      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections, admin_id: repAdminId }).select('id').single(); planId = np?.id ?? null; }
       const now = new Date().toISOString();
       let expiresAt: Date;
       if (expiresAtDate) { expiresAt = new Date(expiresAtDate); } else { expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + parseInt(days)); }
@@ -190,12 +196,18 @@ Deno.serve(async (req) => {
       if (!mac || !sourceId || !hours) throw new Error('Dados incompletos');
       const normalizedMac = normalizeMac(mac);
       const hoursNum = Math.min(Math.max(1, parseInt(hours)), 6);
+      // Fetch rep's admin_id to keep plan isolated
+      const { data: repInfo } = await supabase.from('representatives').select('admin_id').eq('id', repId).maybeSingle();
+      const repAdminId: string | null = repInfo?.admin_id ?? null;
       const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).single();
       if (!source) throw new Error('Fonte não encontrada');
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      const planMatchQ2 = supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username);
+      const { data: existingPlan } = repAdminId
+        ? await planMatchQ2.eq('admin_id', repAdminId).maybeSingle()
+        : await planMatchQ2.is('admin_id', null).maybeSingle();
       if (existingPlan) { planId = existingPlan.id; }
-      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections, admin_id: repAdminId }).select('id').single(); planId = np?.id ?? null; }
       const now = new Date().toISOString();
       const expiresAt = new Date(Date.now() + hoursNum * 60 * 60 * 1000).toISOString();
       const normalizedEmail = email ? email.toLowerCase().trim() : `mac_${normalizedMac.replace(/:/g, '').toLowerCase()}@gbtvon.local`;
@@ -265,12 +277,18 @@ Deno.serve(async (req) => {
       const { deviceId, repId, repPassword, sourceId } = body;
       if (!await validateRep(repId, repPassword)) return authError();
       if (!deviceId || !sourceId) throw new Error('Dados incompletos');
+      // Fetch rep's admin_id to keep plan isolated
+      const { data: repInfoCS } = await supabase.from('representatives').select('admin_id').eq('id', repId).maybeSingle();
+      const repAdminIdCS: string | null = repInfoCS?.admin_id ?? null;
       const { data: source } = await supabase.from('sources').select('*').eq('id', sourceId).eq('rep_id', repId).maybeSingle();
       if (!source) throw new Error('Fonte não encontrada ou não pertence a este representante');
       let planId: string | null = null;
-      const { data: existingPlan } = await supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username).maybeSingle();
+      const planMatchQ3 = supabase.from('plans').select('id').eq('server_url', source.server_url).eq('xtream_username', source.xtream_username);
+      const { data: existingPlan } = repAdminIdCS
+        ? await planMatchQ3.eq('admin_id', repAdminIdCS).maybeSingle()
+        : await planMatchQ3.is('admin_id', null).maybeSingle();
       if (existingPlan) { planId = existingPlan.id; }
-      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections }).select('id').single(); planId = np?.id ?? null; }
+      else { const { data: np } = await supabase.from('plans').insert({ name: source.name, server_url: source.server_url, xtream_username: source.xtream_username, xtream_password: source.xtream_password, max_macs: source.max_connections, admin_id: repAdminIdCS }).select('id').single(); planId = np?.id ?? null; }
       const { error } = await supabase.from('devices').update({ source_id: sourceId, plan_id: planId, updated_at: new Date().toISOString() }).eq('id', deviceId).eq('rep_id', repId);
       if (error) throw error;
       return json({ success: true, source_name: source.name });
@@ -388,9 +406,10 @@ Deno.serve(async (req) => {
 
     if (action === 'getRepresentatives') {
       const query = supabase.from('representatives').select('*').order('rep_number', { ascending: true });
+      // Root admin sees only their own reps (admin_id IS NULL); sub-admin sees only theirs
       const { data: reps, error } = resolvedAdminId
         ? await query.eq('admin_id', resolvedAdminId)
-        : await query;
+        : await query.is('admin_id', null);
       if (error) throw error;
       const withStats = await Promise.all((reps || []).map(async (r: any) => {
         const { count: activeDevices } = await supabase.from('devices').select('*', { count: 'exact', head: true }).eq('rep_id', r.id).eq('activated', true);
@@ -462,9 +481,10 @@ Deno.serve(async (req) => {
 
     if (action === 'getSources') {
       const baseQuery = supabase.from('sources').select('*, representatives(name)').order('created_at', { ascending: false });
+      // Root admin sees only their own sources (admin_id IS NULL); sub-admin sees only theirs
       const { data: sources, error } = resolvedAdminId
         ? await baseQuery.eq('admin_id', resolvedAdminId)
-        : await baseQuery;
+        : await baseQuery.is('admin_id', null);
       if (error) throw error;
       const withCount = await Promise.all((sources || []).map(async (s: any) => {
         const { count } = await supabase.from('devices').select('*', { count: 'exact', head: true }).eq('source_id', s.id).eq('activated', true);
@@ -508,12 +528,20 @@ Deno.serve(async (req) => {
       const baseQ = supabase.from('devices').select('*, plans(id, name, server_url), representatives(rep_number, name)').order('created_at', { ascending: false });
       let devQuery;
       if (resolvedAdminId) {
+        // Sub-admin: devices tagged to them or to their reps
         const { data: adminReps } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
         const repIds = (adminReps || []).map((r: any) => r.id);
         devQuery = repIds.length > 0
           ? baseQ.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${repIds.join(',')})`)
           : baseQ.eq('admin_id', resolvedAdminId);
-      } else { devQuery = baseQ; }
+      } else {
+        // Root admin: devices with no admin_id OR belonging to root-owned reps (admin_id IS NULL)
+        const { data: rootReps } = await supabase.from('representatives').select('id').is('admin_id', null);
+        const rootRepIds = (rootReps || []).map((r: any) => r.id);
+        devQuery = rootRepIds.length > 0
+          ? baseQ.or(`admin_id.is.null,rep_id.in.(${rootRepIds.join(',')})`)
+          : baseQ.is('admin_id', null);
+      }
       const { data: devices, error } = await devQuery;
       if (error) throw error;
       return json({ devices });
@@ -644,15 +672,25 @@ Deno.serve(async (req) => {
     if (action === 'get_stats') {
       const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      // Resolve rep IDs in scope for this admin
       let scopeRepIds: string[] = [];
       if (resolvedAdminId) {
         const { data: ar } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
         scopeRepIds = (ar || []).map((r: any) => r.id);
+      } else {
+        const { data: ar } = await supabase.from('representatives').select('id').is('admin_id', null);
+        scopeRepIds = (ar || []).map((r: any) => r.id);
       }
       const addScope = (q: any) => {
-        if (!resolvedAdminId) return q;
-        if (scopeRepIds.length > 0) return q.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${scopeRepIds.join(',')})`);
-        return q.eq('admin_id', resolvedAdminId);
+        if (resolvedAdminId) {
+          // Sub-admin scope
+          if (scopeRepIds.length > 0) return q.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${scopeRepIds.join(',')})`);
+          return q.eq('admin_id', resolvedAdminId);
+        } else {
+          // Root admin scope: own devices (admin_id null) + root-rep devices
+          if (scopeRepIds.length > 0) return q.or(`admin_id.is.null,rep_id.in.(${scopeRepIds.join(',')})`);
+          return q.is('admin_id', null);
+        }
       };
       const [
         { count: total }, { count: active }, { count: blocked },
@@ -680,11 +718,19 @@ Deno.serve(async (req) => {
         .gte('current_content_at', thirtyMinAgo)
         .order('current_content_at', { ascending: false });
       if (resolvedAdminId) {
+        // Sub-admin: own devices + their reps' devices
         const { data: ar } = await supabase.from('representatives').select('id').eq('admin_id', resolvedAdminId);
         const repIds = (ar || []).map((r: any) => r.id);
         watchQ = (repIds.length > 0
           ? watchQ.or(`admin_id.eq.${resolvedAdminId},rep_id.in.(${repIds.join(',')})`)
           : watchQ.eq('admin_id', resolvedAdminId)) as any;
+      } else {
+        // Root admin: own devices (admin_id null) + root-rep devices
+        const { data: ar } = await supabase.from('representatives').select('id').is('admin_id', null);
+        const rootRepIds = (ar || []).map((r: any) => r.id);
+        watchQ = (rootRepIds.length > 0
+          ? watchQ.or(`admin_id.is.null,rep_id.in.(${rootRepIds.join(',')})`)
+          : watchQ.is('admin_id', null)) as any;
       }
       const { data: watching, error } = await watchQ;
       if (error) throw error;
