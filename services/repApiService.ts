@@ -91,10 +91,26 @@ export interface RepDevice {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Sub-admin credentials — mirrored from adminApiService when sub-admin logs in
+let _subAdminId = '';
+let _subAdminSecret = '';
+export function setRepSubAdminCredentials(id: string, secret: string) {
+  _subAdminId = id;
+  _subAdminSecret = secret;
+}
+export function clearRepSubAdminCredentials() {
+  _subAdminId = '';
+  _subAdminSecret = '';
+}
+
 async function callAdmin(action: string, payload?: Record<string, any>): Promise<any> {
   const supabase = getSupabaseClient();
+  // Use sub-admin credentials if active, otherwise root admin password
+  const authPayload = _subAdminId
+    ? { adminId: _subAdminId, adminSecret: _subAdminSecret }
+    : { adminPassword: _adminPassword };
   const { data, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, adminPassword: _adminPassword, ...payload },
+    body: { action, ...authPayload, ...payload },
   });
   if (error) {
     let msg = error.message;

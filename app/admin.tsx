@@ -21,7 +21,8 @@ import {
 } from '@/services/adminApiService';
 import {
   getRepresentatives, createRepresentative, updateRepresentative, deleteRepresentative,
-  addCredits, removeCredits, getSources, createSource, updateSource, deleteSource, setRepAdminPassword,
+  addCredits, removeCredits, getSources, createSource, updateSource, deleteSource,
+  setRepAdminPassword, setRepSubAdminCredentials, clearRepSubAdminCredentials,
   Representative, Source,
 } from '@/services/repApiService';
 
@@ -181,10 +182,11 @@ export default function AdminScreen() {
         const result = await subAdminLogin(subAdminUsername.trim(), passwordInput.trim());
         if (!result.ok || !result.admin) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
         setSubAdminCredentials(result.admin.id, passwordInput.trim());
+        setRepSubAdminCredentials(result.admin.id, passwordInput.trim());
         setCurrentSubAdmin(result.admin);
         setIsSubAdmin(true);
         setAuthenticated(true);
-        loadAll();
+        loadAllForSubAdmin();
       } else {
         setAdminPassword(passwordInput);
         setRepAdminPassword(passwordInput);
@@ -203,6 +205,22 @@ export default function AdminScreen() {
       clearSubAdminCredentials();
     }
     setLoading(false);
+  }
+
+  /** Load for sub-admin — called immediately after sub-admin login (isSubAdmin state not yet committed) */
+  async function loadAllForSubAdmin(silent = false) {
+    if (!silent) setLoading(true);
+    try {
+      const [s, d, p, n, repsList, sourcesList] = await Promise.all([
+        getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
+      ]);
+      setStats(s); setDevices(d); setPlans(p); setNotifications(n);
+      setReps(repsList); setSources(sourcesList);
+    } catch (err: any) {
+      if (!silent) Alert.alert('Erro', err.message);
+    }
+    if (!silent) setLoading(false);
+    setRefreshing(false);
   }
 
   const loadAll = useCallback(async (silent = false) => {
