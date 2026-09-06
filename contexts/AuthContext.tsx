@@ -60,6 +60,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAuthenticatedRef = useRef(false);
   const silentRefreshInFlightRef = useRef(false);
 
+  const initDoneRef = useRef(false);
+
   useEffect(() => {
     initAuth();
 
@@ -68,8 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
       if (nextState === 'active' && prev !== 'active') {
-        // App returned to foreground — immediate re-check
-        silentRefresh();
+        // App returned to foreground — re-check only if already initialized and authenticated
+        if (initDoneRef.current) silentRefresh();
       }
     });
 
@@ -134,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         // Do a fresh check in background with a timeout — don't block startup
         setIsLoading(false);
+        initDoneRef.current = true;
         silentRefreshWithEmail(mac);
         return;
       }

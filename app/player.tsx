@@ -437,8 +437,24 @@ export default function PlayerScreen() {
 
     void startReporting();
 
+    // Also clear content when app goes to background (covers force-close / task-swipe)
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') {
+        if (macAddressRef.current) {
+          void updateCurrentContent(macAddressRef.current, null, null);
+        }
+      } else {
+        // App came back to foreground — re-report current content
+        if (macAddressRef.current) {
+          const contentType = isLive ? 'live' : type === 'episode' ? 'series' : 'movie';
+          void updateCurrentContent(macAddressRef.current, title || 'Reproduzindo', contentType);
+        }
+      }
+    });
+
     return () => {
       if (contentReportTimerRef.current) clearInterval(contentReportTimerRef.current);
+      appStateSub.remove();
       // Clear content when player closes
       if (macAddressRef.current) {
         void updateCurrentContent(macAddressRef.current, null, null);

@@ -62,6 +62,17 @@ Deno.serve(async (req) => {
       if (client_name && client_name.trim() && !existing.client_name) {
         updateData.client_name = client_name.trim();
       }
+      // Auto-clear stale current_content: if the last report was >10 minutes ago,
+      // the app was force-closed without cleanup — clear it now so the "Assistindo"
+      // tab doesn't show the user as watching when they're just opening the app.
+      if (existing.current_content && existing.current_content_at) {
+        const staleCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        if (existing.current_content_at < staleCutoff) {
+          updateData.current_content = null;
+          updateData.current_content_type = null;
+          updateData.current_content_at = null;
+        }
+      }
       await supabase.from('devices').update(updateData).eq('mac_address', normalizedMac);
 
       // ── MANUALLY BLOCKED ──────────────────────────────────────
