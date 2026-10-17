@@ -11,13 +11,18 @@ import {
   ActivationNotification,
 } from '@/services/activationService';
 import { getDeviceId } from '@/services/deviceIdService';
+import { DEMO_REPRESENTATIVE_CODE } from '@/services/demoCatalog';
 
 // Access is checked in the background only. Content navigation must never be
 // interrupted by an activation check, especially on lower-powered TV boxes.
-const POLL_INTERVAL_MS = 30 * 60 * 1000;
+// The admin panel classifies a device as online from its recent heartbeat.
+// Keep the interval safely below that window, including on webOS where a
+// packaged web app can stay open for hours without navigating anywhere.
+const POLL_INTERVAL_MS = 3 * 60 * 1000;
 
 interface AuthContextType {
   isAuthenticated: boolean;
+  isDemoMode: boolean;
   isLoading: boolean;
   auth: XtreamAuth | null;
   userEmail: string | null;
@@ -38,9 +43,11 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const CLIENT_NAME_KEY = 'gbtvon_client_name';
+const DEMO_MODE_KEY = 'gbtvon_demo_mode';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [auth, setAuth] = useState<XtreamAuth | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null); // kept for backward compat
@@ -114,18 +121,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function initAuth() {
     try {
-      const [storedName, mac, cached] = await Promise.all([
+      const [storedName, mac, cached, demoMode] = await Promise.all([
         AsyncStorage.getItem(CLIENT_NAME_KEY),
         getDeviceId(),
         loadStoredActivation(),
+        AsyncStorage.getItem(DEMO_MODE_KEY),
       ]);
 
       setMacAddress(mac);
 
+      if (demoMode === 'true') {
+        const demoName = storedName || 'Demonstração LG';
+        setClientName(demoName);
+        setUserEmail(demoName);
+        setPlanName('Demonstração');
+        setExpiresAt(null);
+        setAuth(null);
+        setActivationStatus('activated');
+        setIsDemoMode(true);
+        setIsAuthenticated(true);
+        isAuthenticatedRef.current = true;
+        setIsLoading(false);
+        return;
+      }
+
       if (mac) {
         // MAC is always the primary identifier — use it directly
         userEmailRef.current = mac; // reuse ref as identifier
-        if (storedName) setClientName(storedName);
+        if (storedName) {
+          setClientName(storedName);
+          // The profile uses this legacy field. Restore the customer's real
+          // name on every launch instead of falling back to "Usuário".
+          setUserEmail(storedName);
+        }
 
         if (cached) {
           // Apply cached state immediately so UI loads fast
@@ -208,11 +236,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(nameOrEmail: string, repCode?: string): Promise<{ success: boolean; status: string; error?: string; message?: string }> {
+    const clientName = nameOrEmail.trim() || 'Demonstração LG';
+    if (repCode?.trim() === DEMO_REPRESENTATIVE_CODE) {
+      stopPolling();
+      userEmailRef.current = null;
+      setClientName(clientName);
+      setUserEmail(clientName);
+      setPlanName('Demonstração');
+      setExpiresAt(null);
+      setAuth(null);
+      setActivationStatus('activated');
+      setGracePeriodUsed(false);
+      setBlockReasonDetail(null);
+      setDevicePrice(null);
+      setIsDemoMode(true);
+      setIsAuthenticated(true);
+      isAuthenticatedRef.current = true;
+      await Promise.all([
+        AsyncStorage.setItem(CLIENT_NAME_KEY, clientName),
+        AsyncStorage.setItem(DEMO_MODE_KEY, 'true'),
+        clearActivationCache(),
+      ]);
+      return { success: true, status: 'activated', message: 'Modo de demonstração iniciado.' };
+    }
+
     // Use MAC as the primary identifier; store client name for display
     const mac = await getDeviceId();
     userEmailRef.current = mac;
     setClientName(nameOrEmail.trim() || null);
     setUserEmail(nameOrEmail.trim() || null);
+    setIsDemoMode(false);
+    await AsyncStorage.removeItem(DEMO_MODE_KEY);
 
     const result = await checkActivation(mac, { repCode: repCode?.trim() || undefined, clientName: nameOrEmail.trim() || undefined });
 
@@ -248,6 +302,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function refreshActivation() {
+    if (isDemoMode) return;
     if (!userEmailRef.current) return;
     const result = await checkActivation(userEmailRef.current);
     applyActivationResult(result);
@@ -263,6 +318,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userEmailRef.current = null;
     await Promise.all([
       AsyncStorage.removeItem(CLIENT_NAME_KEY),
+      AsyncStorage.removeItem(DEMO_MODE_KEY),
       clearActivationCache(),
     ]);
     setAuth(null);
@@ -274,12 +330,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setGracePeriodUsed(false);
     setPendingNotifications([]);
     setIsAuthenticated(false);
+    setIsDemoMode(false);
     isAuthenticatedRef.current = false;
   }
 
   return (
     <AuthContext.Provider value={{
-      isAuthenticated, isLoading, auth, userEmail, macAddress,
+      isAuthenticated, isDemoMode, isLoading, auth, userEmail, macAddress,
       planName, expiresAt, activationStatus, gracePeriodUsed,
       blockReasonDetail, devicePrice,
       pendingNotifications, login, logout, refreshActivation, markNotificationsRead,

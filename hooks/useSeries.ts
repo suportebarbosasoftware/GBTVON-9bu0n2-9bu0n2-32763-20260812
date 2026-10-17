@@ -9,6 +9,7 @@ import {
   SeriesInfo,
 } from '@/services/xtreamApi';
 import { useAuth } from '@/hooks/useAuth';
+import { DEMO_SERIES, DEMO_SERIES_CATEGORIES, DEMO_SERIES_INFO, getDemoEpisodeUrl } from '@/services/demoCatalog';
 
 interface SeriesCatalogCache {
   accountKey: string;
@@ -24,7 +25,7 @@ function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): s
 
 /** Set `loadCatalog` to false when only episode helpers are needed. */
 export function useSeries(loadCatalog = true) {
-  const { auth } = useAuth();
+  const { auth, isDemoMode } = useAuth();
   const [categories, setCategories] = useState<SeriesCategory[]>([]);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [filteredSeries, setFilteredSeries] = useState<Series[]>([]);
@@ -33,8 +34,16 @@ export function useSeries(loadCatalog = true) {
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
+    if (isDemoMode && loadCatalog) {
+      setCategories(DEMO_SERIES_CATEGORIES);
+      setSeriesList(DEMO_SERIES);
+      setFilteredSeries(DEMO_SERIES);
+      setLoading(false);
+      return;
+    }
     if (auth && loadCatalog) loadData();
-  }, [auth, loadCatalog]);
+    else if (loadCatalog) setLoading(false);
+  }, [auth, isDemoMode, loadCatalog]);
 
   async function loadData(forceRefresh = false) {
     if (!auth) return;
@@ -78,11 +87,13 @@ export function useSeries(loadCatalog = true) {
   }, [selectedCategory, searchQuery, seriesList]);
 
   async function fetchSeriesInfo(seriesId: number): Promise<SeriesInfo | null> {
+    if (isDemoMode && seriesId === 920001) return DEMO_SERIES_INFO;
     if (!auth) return null;
     return getSeriesInfo(auth, seriesId);
   }
 
   function getEpisodeUrl(episodeId: string, ext: string = 'mp4', directSource?: string): string {
+    if (isDemoMode) return getDemoEpisodeUrl(episodeId) || directSource || '';
     if (!auth) return '';
     return getSeriesEpisodeUrl(auth, episodeId, ext || 'mp4', directSource);
   }

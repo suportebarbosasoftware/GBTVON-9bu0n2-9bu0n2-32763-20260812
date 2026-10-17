@@ -1,0 +1,12 @@
+{
+  "id": "com.gbtvon.streaming",
+  "version": "1.1.1",
+  "vendor": "GBTVON",
+  "type": "web",
+  "main": "index.html",
+  "title": "GBTVON",
+  "icon": "icon.png",
+  "largeIcon": "icon.png",
+  "bgColor": "#050505",
+  "disableBackHistoryAPI": true
+}

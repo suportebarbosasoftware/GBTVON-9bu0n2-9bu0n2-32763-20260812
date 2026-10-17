@@ -7,6 +7,7 @@ import {
   VodStream,
 } from '@/services/xtreamApi';
 import { useAuth } from '@/hooks/useAuth';
+import { DEMO_MOVIE_CATEGORIES, getDemoMovieUrl, getDemoMovies } from '@/services/demoCatalog';
 
 interface MoviesCatalogCache {
   accountKey: string;
@@ -25,7 +26,7 @@ function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): s
 }
 
 export function useMovies() {
-  const { auth } = useAuth();
+  const { auth, isDemoMode } = useAuth();
   const [categories, setCategories] = useState<VodCategory[]>([]);
   const [movies, setMovies] = useState<VodStream[]>([]);
   const [filteredMovies, setFilteredMovies] = useState<VodStream[]>([]);
@@ -34,8 +35,17 @@ export function useMovies() {
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
+    if (isDemoMode) {
+      const demoMovies = getDemoMovies();
+      setCategories(DEMO_MOVIE_CATEGORIES);
+      setMovies(demoMovies);
+      setFilteredMovies(demoMovies);
+      setLoading(false);
+      return;
+    }
     if (auth) loadData();
-  }, [auth]);
+    else setLoading(false);
+  }, [auth, isDemoMode]);
 
   async function loadData(forceRefresh = false) {
     if (!auth) return;
@@ -84,6 +94,7 @@ export function useMovies() {
    * otherwise builds standard Xtream URL with correct extension.
    */
   function getMovieUrl(streamId: number, ext: string = 'mp4', directSource?: string): string {
+    if (isDemoMode) return getDemoMovieUrl(streamId) || directSource || '';
     if (!auth) return '';
     return getVodStreamUrl(auth, streamId, ext || 'mp4', directSource);
   }

@@ -321,6 +321,39 @@ export interface EpgData {
 }
 
 /**
+ * Xtream providers commonly return EPG titles/descriptions in Base64. Leaving
+ * those fields untouched makes the guide look like it contains a URL or code
+ * instead of the programme name. Plain-text providers remain unchanged.
+ */
+function decodeEpgText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const original = value.trim();
+  if (!original || !/^[A-Za-z0-9+/]+={0,2}$/.test(original) || original.length % 4 !== 0) {
+    return original;
+  }
+
+  try {
+    const binary = atob(original);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    const decoded = new TextDecoder('utf-8').decode(bytes).trim();
+    // Avoid treating ordinary short words that happen to match the Base64
+    // alphabet as encoded content.
+    const readableChars = decoded.replace(/[\x00-\x08\x0E-\x1F\x7F-\x9F]/g, '').length;
+    return decoded && readableChars / decoded.length > 0.9 ? decoded : original;
+  } catch {
+    return original;
+  }
+}
+
+function normalizeEpgProgram(program: EpgProgram): EpgProgram {
+  return {
+    ...program,
+    title: decodeEpgText(program.title),
+    description: decodeEpgText(program.description),
+  };
+}
+
+/**
  * Fetch short EPG for a single stream (current + next programs).
  * limit=3 returns current + 2 upcoming entries.
  */
@@ -335,7 +368,16 @@ export async function getShortEpg(
       stream_id: String(streamId),
       limit: String(limit),
     });
-    return data?.epg_listings ?? [];
+    const listings = data?.epg_listings ?? [];
+    if (listings.length) return listings.map(normalizeEpgProgram);
+    // Some Xtream panels expose EPG only through the full table endpoint,
+    // even though they accept get_short_epg. Retry transparently so the TV
+    // guide does not say unavailable for every channel on those providers.
+    const fallback = await apiCall(auth, {
+      action: 'get_simple_data_table',
+      stream_id: String(streamId),
+    });
+    return (fallback?.epg_listings ?? []).slice(0, limit).map(normalizeEpgProgram);
   } catch {
     return [];
   }
@@ -354,7 +396,7 @@ export async function getFullEpg(
       action: 'get_simple_data_table',
       stream_id: String(streamId),
     });
-    return data?.epg_listings ?? [];
+    return (data?.epg_listings ?? []).map(normalizeEpgProgram);
   } catch {
     return [];
   }

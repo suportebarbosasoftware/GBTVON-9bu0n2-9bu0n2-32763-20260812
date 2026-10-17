@@ -1,14 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  Pressable,
   Alert,
   ActivityIndicator,
-  Animated,
-  Easing,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -23,7 +21,6 @@ import { getDeviceProfile } from '@/services/deviceService';
 import { getDeviceId } from '@/services/deviceIdService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
-import { useDevMode } from '@/contexts/DevModeContext';
 
 const device = getDeviceProfile();
 const isTV = IS_TV;
@@ -43,32 +40,11 @@ export default function ProfileScreen() {
   const [deviceMac, setDeviceMac] = useState(authMac || '');
   const [refreshing, setRefreshing] = useState(false);
 
-  // Developer mode via shared context — overlay rendered globally in TabLayout
-  const { devMode, registerTap } = useDevMode();
-  const devPulse = useRef(new Animated.Value(1)).current;
-
-  // Hidden admin access: tap headset icon 7 times
-  const adminTapCount = useRef(0);
-  const adminTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
     loadStats();
     if (!authMac) getDeviceId().then(setDeviceMac);
     else setDeviceMac(authMac);
   }, [authMac]);
-
-  // Pulse animation for dev mode avatar ring
-  useEffect(() => {
-    if (!devMode) { devPulse.setValue(1); return; }
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(devPulse, { toValue: 1.12, duration: 600, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
-        Animated.timing(devPulse, { toValue: 1, duration: 600, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [devMode]);
 
   async function loadStats() {
     setLoadingStats(true);
@@ -87,25 +63,14 @@ export default function ProfileScreen() {
     Alert.alert('Verificado', 'Status de ativação atualizado!');
   }
 
-  function handleSupportIconTap() {
-    adminTapCount.current += 1;
-    if (adminTapTimer.current) clearTimeout(adminTapTimer.current);
-    adminTapTimer.current = setTimeout(() => { adminTapCount.current = 0; }, 3000);
-    if (adminTapCount.current >= 7) {
-      adminTapCount.current = 0;
-      router.push('/admin' as any);
-    }
-  }
-
-  // 7 taps on avatar → developer mode (global via context, overlay in TabLayout)
-  function handleAvatarTap() {
-    const remaining = registerTap();
-    if (remaining === 0 && !devMode) {
-      Alert.alert('Modo Desenvolvedor', 'Painel D-Pad ativado — disponível em todas as abas!');
-    }
-  }
-
   async function handleLogout() {
+    // The native Alert confirmation is not selectable with the webOS remote.
+    // On TV, selecting this explicit row is already the confirmation.
+    if (Platform.OS === 'web') {
+      await logout();
+      router.replace('/login' as any);
+      return;
+    }
     Alert.alert(
       'Trocar conta',
       'Deseja sair e entrar com outro e-mail?',
@@ -124,6 +89,14 @@ export default function ProfileScreen() {
   }
 
   async function handleResetChannels() {
+    // React Native's Alert does not expose its confirmation buttons to the
+    // webOS remote. On LG TV, the selected row is already an intentional
+    // action, so open the setup screen directly.
+    if (Platform.OS === 'web') {
+      await resetSetup();
+      router.push('/channel-setup' as any);
+      return;
+    }
     Alert.alert(
       'Reconfigurar canais',
       'Isto abrirá o assistente de seleção de canais novamente.',
@@ -158,6 +131,13 @@ export default function ProfileScreen() {
   }
 
   async function handleClearHistory() {
+    // Native Alert dialogs are not controllable with the LG remote. Selecting
+    // this dedicated destructive row on TV is the explicit confirmation.
+    if (Platform.OS === 'web') {
+      await clearHistory();
+      setHistoryCount(0);
+      return;
+    }
     Alert.alert(
       'Limpar histórico',
       'Seu histórico de filmes e séries assistidos será apagado.',
@@ -177,7 +157,7 @@ export default function ProfileScreen() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: Colors.bg }}>
+    <View style={{ flex: 1, backgroundColor: 'transparent' }}>
       <ScrollView
         style={[styles.container, { paddingTop: insets.top }]}
         showsVerticalScrollIndicator={false}
@@ -191,46 +171,30 @@ export default function ProfileScreen() {
             contentFit="contain"
           />
           <Text style={styles.headerTitle}>Perfil</Text>
-          {devMode && (
-            <View style={styles.devBadgeHeader}>
-              <Ionicons name="bug-outline" size={12} color="#E50000" />
-              <Text style={styles.devBadgeHeaderText}> DEV</Text>
-            </View>
-          )}
           {isTV ? <Text style={styles.tvNavHint}>↑↓ Navegar · OK Selecionar</Text> : null}
         </View>
 
         {/* Account Card */}
         <View style={[styles.accountCard, isTV && styles.accountCardTV]}>
-          {/* Avatar — 7 taps activates dev mode */}
-          <Pressable onPress={handleAvatarTap} style={{ position: 'relative' }}>
-            <Animated.View style={[
-              styles.accountAvatarRing,
-              devMode && styles.accountAvatarRingDev,
-              devMode && { transform: [{ scale: devPulse }] },
-            ]}>
+          <View style={{ position: 'relative' }}>
+            <View style={styles.accountAvatarRing}>
               <Image
                 source={require('@/assets/images/icon.png')}
                 style={[styles.accountAvatar, isTV && styles.accountAvatarTV]}
                 contentFit="contain"
               />
-            </Animated.View>
-            <View style={[styles.accountStatusDot, { backgroundColor: devMode ? '#E50000' : '#4CAF50' }]} />
-            {devMode && (
-              <View style={styles.devIndicatorBadge}>
-                <Ionicons name="bug" size={10} color="#fff" />
-              </View>
-            )}
-          </Pressable>
+            </View>
+            <View style={[styles.accountStatusDot, { backgroundColor: '#4CAF50' }]} />
+          </View>
 
           <View style={styles.accountInfo}>
             <Text style={[styles.accountUser, isTV && { fontSize: F.lg }]} numberOfLines={1}>
               {userEmail || 'Usuário'}
             </Text>
             <View style={styles.accountStatusBadge}>
-              <View style={[styles.accountStatusDotInline, { backgroundColor: devMode ? '#E50000' : '#4CAF50' }]} />
-              <Text style={[styles.accountStatusText, { color: devMode ? '#E50000' : '#4CAF50', fontSize: isTV ? F.sm : 11 }]}>
-                {devMode ? 'Dev Mode' : 'Ativa'}
+              <View style={[styles.accountStatusDotInline, { backgroundColor: '#4CAF50' }]} />
+              <Text style={[styles.accountStatusText, { color: '#4CAF50', fontSize: isTV ? F.sm : 11 }]}>
+                Ativa
               </Text>
             </View>
             {planName ? (
@@ -259,9 +223,6 @@ export default function ProfileScreen() {
                 MAC: {deviceMac}
               </Text>
             ) : null}
-            {devMode && (
-              <Text style={styles.devTapHint}>Toque na foto 7x para desativar · painel visível em todas as abas</Text>
-            )}
           </View>
         </View>
 
@@ -362,14 +323,11 @@ export default function ProfileScreen() {
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, isTV && { fontSize: F.xs }]}>Suporte</Text>
           <View style={[styles.supportCard, isTV && styles.supportCardTV]}>
-            <Pressable onPress={handleSupportIconTap} hitSlop={16}>
+            <View>
               <Ionicons name="headset-outline" size={isTV ? TV.iconSize.md : 32} color={Colors.primary} />
-            </Pressable>
+            </View>
             <View style={{ flex: 1, marginLeft: 14 }}>
               <Text style={[styles.supportTitle, isTV && { fontSize: F.md }]}>Precisa de ajuda?</Text>
-              <Text style={[styles.supportSub, isTV && { fontSize: F.xs }]}>
-                {isTV ? 'Toque 7x no ícone para acessar o painel Admin' : 'Fale com nosso suporte técnico'}
-              </Text>
             </View>
             <TVFocusable
               style={styles.supportBtn}
@@ -397,7 +355,6 @@ export default function ProfileScreen() {
           <Text style={[styles.versionText, isTV && { fontSize: F.xs }]}>GBTVON • v1.0.0 • Mais que TV, Uma Experiência!</Text>
         </View>
       </ScrollView>
-      {/* DevDPad overlay is rendered globally in app/(tabs)/_layout.tsx */}
     </View>
   );
 }
@@ -452,7 +409,7 @@ function MenuRow({ icon, iconColor, label, subtitle, labelColor, onPress, isLast
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg },
+  container: { flex: 1, backgroundColor: 'transparent' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -473,10 +430,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     margin: isTV ? SP.md : Spacing.md,
     padding: isTV ? SP.md : 18,
-    backgroundColor: '#1a0000',
+    backgroundColor: 'transparent',
     borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(229,0,0,0.3)',
+    borderWidth: 0,
     gap: 16,
   },
   accountCardTV: { padding: 24, borderRadius: 20, borderWidth: 2 },
@@ -523,7 +479,7 @@ const styles = StyleSheet.create({
 
   section: { marginHorizontal: isTV ? SP.md : Spacing.md, marginBottom: isTV ? SP.sm : Spacing.md },
   sectionTitle: { color: Colors.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 0.8, marginBottom: 10, textTransform: 'uppercase' },
-  detailsCard: { backgroundColor: Colors.bgCard, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden' },
+  detailsCard: { backgroundColor: 'transparent', borderRadius: BorderRadius.md, borderWidth: 0, overflow: 'hidden' },
   detailRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: isTV ? 16 : 13, gap: 10 },
   detailRowBorder: { borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   detailLabel: { color: Colors.textSecondary, fontSize: 13, fontWeight: '500', width: 88 },
@@ -542,11 +498,11 @@ const styles = StyleSheet.create({
   refreshActivationText: { color: Colors.primary, fontSize: 13, fontWeight: '600' },
   btnTV: { height: TV.buttonHeight, borderRadius: TV.cardRadius },
   statsRow: { flexDirection: 'row', marginHorizontal: isTV ? SP.md : Spacing.md, marginBottom: isTV ? SP.sm : Spacing.md, gap: 10 },
-  statCard: { flex: 1, backgroundColor: Colors.bgCard, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 14, alignItems: 'center', gap: 4 },
+  statCard: { flex: 1, backgroundColor: 'transparent', borderRadius: BorderRadius.md, borderWidth: 0, padding: 14, alignItems: 'center', gap: 4 },
   statCardTV: { padding: 20, borderRadius: 16 },
   statNum: { color: '#fff', fontSize: 18, fontWeight: '800' },
   statLabel: { color: Colors.textMuted, fontSize: 10, fontWeight: '600' },
-  menuCard: { backgroundColor: Colors.bgCard, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, overflow: 'hidden' },
+  menuCard: { backgroundColor: 'transparent', borderRadius: BorderRadius.md, borderWidth: 0, overflow: 'hidden' },
   menuRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
   menuRowTV: { paddingVertical: 20, paddingHorizontal: 20 },
   menuRowBorder: { borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
@@ -554,7 +510,7 @@ const styles = StyleSheet.create({
   menuIconWrapTV: { width: 48, height: 48, borderRadius: 14 },
   menuRowLabel: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600' },
   menuRowSub: { color: Colors.textMuted, fontSize: 11, marginTop: 2 },
-  supportCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bgCard, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, padding: 16, gap: 0 },
+  supportCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'transparent', borderRadius: BorderRadius.md, borderWidth: 0, padding: 16, gap: 0 },
   supportCardTV: { padding: 22, borderRadius: 16 },
   supportTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
   supportSub: { color: Colors.textMuted, fontSize: 11, marginTop: 2 },

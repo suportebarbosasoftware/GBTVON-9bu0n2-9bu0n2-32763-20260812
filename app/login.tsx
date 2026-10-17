@@ -20,7 +20,9 @@ import { useAuth } from '@/hooks/useAuth';
 import { getDeviceId } from '@/services/deviceIdService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
+import TVCatalogSearch from '@/components/ui/TVCatalogSearch';
 import { validateRepCode } from '@/services/repApiService';
+import { DEMO_REPRESENTATIVE_CODE } from '@/services/demoCatalog';
 
 const { width, height } = Dimensions.get('window');
 const isTV = IS_TV;
@@ -41,24 +43,11 @@ export default function LoginScreen() {
   const [macAddress, setMacAddress] = useState('');
   const [pendingInfo, setPendingInfo] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
 
-  // Hidden admin access: tap logo 5 times
-  const logoTapCount = useRef(0);
-  const logoTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repCodeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     getDeviceId().then(setMacAddress);
   }, []);
-
-  function handleLogoTap() {
-    logoTapCount.current += 1;
-    if (logoTapTimer.current) clearTimeout(logoTapTimer.current);
-    logoTapTimer.current = setTimeout(() => { logoTapCount.current = 0; }, 2000);
-    if (logoTapCount.current >= 5) {
-      logoTapCount.current = 0;
-      router.push('/admin');
-    }
-  }
 
   // Debounce rep code validation
   function handleRepCodeChange(val: string) {
@@ -66,6 +55,12 @@ export default function LoginScreen() {
     setRepCode(cleaned);
     setRepCodeValid(null);
     if (repCodeTimer.current) clearTimeout(repCodeTimer.current);
+    // Código reservado à análise da LG: abre somente o catálogo público
+    // embarcado, sem consultar ou expor qualquer conta real.
+    if (cleaned === DEMO_REPRESENTATIVE_CODE) {
+      setRepCodeValid(true);
+      return;
+    }
     if (cleaned.length >= 1) {
       repCodeTimer.current = setTimeout(() => checkRepCode(cleaned), 700);
     }
@@ -139,13 +134,13 @@ export default function LoginScreen() {
         <View style={styles.bgOverlay} />
 
         {/* Logo */}
-        <Pressable onPress={handleLogoTap} style={styles.logoWrap}>
+        <View style={styles.logoWrap}>
           <Image
             source={require('@/assets/images/icon.png')}
             style={[styles.logo, isTV && styles.logoTV]}
             contentFit="contain"
           />
-        </Pressable>
+        </View>
 
         <Text style={[styles.tagline, isTV && { fontSize: F.sm }]}>Mais que TV, Uma Experiência!</Text>
 
@@ -168,8 +163,18 @@ export default function LoginScreen() {
                   : 'Digite seu nome e o código do seu representante'}
               </Text>
 
-              {/* Client name input */}
-              <View style={[styles.inputWrap, isTV && styles.inputWrapTV]}>
+              {/* Native text inputs are unreliable with webOS D-pad. TV uses
+                  the application's remote keyboard and explicit focus order. */}
+              {isTV ? (
+                <TVCatalogSearch
+                  testID="login-name-field"
+                  label="Seu nome completo"
+                  submitLabel="CONCLUIR"
+                  value={clientName}
+                  onChangeText={value => { setClientName(value); setError(''); }}
+                  hasTVPreferredFocus
+                />
+              ) : <View style={styles.inputWrap}>
                 <Ionicons name="person-outline" size={isTV ? 24 : 18} color={Colors.textMuted} style={styles.inputIcon} />
                 <TextInput
                   style={[styles.input, isTV && { fontSize: F.md, color: '#fff' }]}
@@ -186,12 +191,19 @@ export default function LoginScreen() {
                     <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
                   </Pressable>
                 )}
-              </View>
+              </View>}
 
               {/* Rep code input */}
-              <View style={[
+              {isTV ? (
+                <TVCatalogSearch
+                  testID="login-rep-field"
+                  label="Código do representante"
+                  submitLabel="CONCLUIR"
+                  value={repCode}
+                  onChangeText={handleRepCodeChange}
+                />
+              ) : <View style={[
                 styles.inputWrap,
-                isTV && styles.inputWrapTV,
                 repCodeValid === true && styles.inputWrapValid,
                 repCodeValid === false && styles.inputWrapError,
               ]}>
@@ -215,7 +227,7 @@ export default function LoginScreen() {
                 ) : repCodeValid === false ? (
                   <Ionicons name="close-circle" size={16} color={Colors.error} />
                 ) : null}
-              </View>
+              </View>}
               <Text style={styles.repCodeHint}>
                 Solicite o código ao seu representante GBTVON
               </Text>
@@ -228,6 +240,7 @@ export default function LoginScreen() {
               ) : null}
 
               <TVFocusable
+                testID="login-submit"
                 style={[
                   styles.loginBtn,
                   isTV && styles.loginBtnTV,
@@ -301,15 +314,6 @@ export default function LoginScreen() {
             <Text style={[styles.supportPhone, isTV && { fontSize: F.xs }]}>(79) 99900-1094</Text>
           </TVFocusable>
         </View>
-
-        {/* Representative area */}
-        <Pressable
-          style={styles.repAreaBtn}
-          onPress={() => router.push('/rep-panel')}
-        >
-          <Ionicons name="headset-outline" size={16} color={Colors.textMuted} />
-          <Text style={styles.repAreaText}> Área do Representante</Text>
-        </Pressable>
 
         {/* TV hint */}
         {isTV ? (

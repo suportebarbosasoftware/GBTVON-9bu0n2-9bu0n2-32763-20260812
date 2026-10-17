@@ -21,10 +21,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSeries } from '@/hooks/useSeries';
 import { Colors, Spacing, BorderRadius } from '@/constants/theme';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import { getHistory, HistoryItem } from '@/services/favoritesService';
+import { addFavorite, getFavorites, getHistory, HistoryItem, FavoriteItem, removeFavorite } from '@/services/favoritesService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import TVCatalogSearch from '@/components/ui/TVCatalogSearch';
+import AdultPinModal from '@/components/ui/AdultPinModal';
+import { isAdultCategory } from '@/services/channelFilterService';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const CARD_W = IS_TV ? 160 : 110;
@@ -32,7 +34,7 @@ const CARD_H = Math.round(CARD_W * 1.45);
 const HERO_H = IS_TV ? 220 : 180;
 const NUM_COLS = Math.max(2, Math.floor(SCREEN_W / (CARD_W + 16)));
 
-type ActiveTab = 'browse' | 'history';
+type ActiveTab = 'browse' | 'favorites' | 'history';
 
 export default function SeriesScreen() {
   const insets = useSafeAreaInsets();
@@ -40,14 +42,19 @@ export default function SeriesScreen() {
   const { categories, seriesList, selectedCategory, loading, searchQuery, setSearchQuery, selectCategory } = useSeries();
 
   const [watched, setWatched] = useState<Set<string>>(new Set());
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [favoriteItems, setFavoriteItems] = useState<FavoriteItem[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('browse');
   const [heroIndex, setHeroIndex] = useState(0);
+  const [adultPinVisible, setAdultPinVisible] = useState(false);
+  const [pendingAdultCategory, setPendingAdultCategory] = useState<string | null>(null);
+  const [unlockedAdultCategories, setUnlockedAdultCategories] = useState<Set<string>>(new Set());
   const heroTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref for TV D-Pad focus-based scrolling
   const mainListRef = useRef<FlatList>(null);
 
-  useEffect(() => { loadHistory(); }, []);
+  useEffect(() => { loadFavoritesAndHistory(); }, []);
 
   useEffect(() => {
     if (seriesList.length === 0) return;
@@ -57,11 +64,55 @@ export default function SeriesScreen() {
     return () => { if (heroTimer.current) clearInterval(heroTimer.current); };
   }, [seriesList.length]);
 
-  async function loadHistory() {
-    const hist = await getHistory();
-    const sh = hist.filter(h => h.type === 'episode' || (h.type as string) === 'series');
-    setWatched(new Set(sh.map(h => h.seriesId || h.id)));
-    setHistoryItems(sh);
+  const adultCategoryIds = useMemo(() => new Set(categories.filter(category => isAdultCategory(category.category_name)).map(category => category.category_id)), [categories]);
+  const visibleSeries = useMemo(() => seriesList.filter(series => !adultCategoryIds.has(series.category_id) || unlockedAdultCategories.has(series.category_id)), [adultCategoryIds, seriesList, unlockedAdultCategories]);
+  const selectProtectedCategory = useCallback((categoryId: string) => {
+    if (adultCategoryIds.has(categoryId) && !unlockedAdultCategories.has(categoryId)) {
+      setPendingAdultCategory(categoryId); setAdultPinVisible(true); return;
+    }
+    selectCategory(categoryId);
+  }, [adultCategoryIds, selectCategory, unlockedAdultCategories]);
+
+  async function loadFavoritesAndHistory() {
+    const [favs, hist] = await Promise.all([getFavorites(), getHistory()]);
+    const seriesFavorites = favs.filter(item => item.type === 'series');
+    setFavorites(new Set(seriesFavorites.map(item => item.id)));
+    setFavoriteItems(seriesFavorites);
+    const seriesHistory = hist.filter(h => h.type === 'episode' || h.type === 'series');
+    setWatched(new Set(seriesHistory.map(h => h.seriesId || h.id)));
+
+    // O histórico de séries mostra uma entrada por série, não o último
+    // episódio isolado. Assim o usuário volta à página da série e continua de
+    // onde parou sem perder o contexto.
+    const grouped = new Map<string, HistoryItem>();
+    for (const entry of seriesHistory) {
+      const seriesId = entry.seriesId || entry.id;
+      const existing = grouped.get(seriesId);
+      if (!existing || entry.watchedAt > existing.watchedAt) {
+        grouped.set(seriesId, {
+          ...entry,
+          id: seriesId,
+          type: 'series',
+          name: entry.seriesName || entry.name,
+          seriesId,
+          seriesName: entry.seriesName || entry.name,
+          poster: entry.poster || existing?.poster || '',
+        });
+      }
+    }
+    setHistoryItems(Array.from(grouped.values()).sort((a, b) => b.watchedAt - a.watchedAt));
+  }
+
+  async function toggleFavorite(seriesId: number, name: string, cover: string) {
+    const id = String(seriesId);
+    if (favorites.has(id)) {
+      await removeFavorite(id, 'series');
+      setFavorites(previous => { const next = new Set(previous); next.delete(id); return next; });
+    } else {
+      await addFavorite({ id, type: 'series', name, poster: cover });
+      setFavorites(previous => new Set(previous).add(id));
+    }
+    void loadFavoritesAndHistory();
   }
 
   function handleSeriesPress(seriesId: number, name: string, cover: string) {
@@ -75,18 +126,19 @@ export default function SeriesScreen() {
   const categoryRows = useMemo(() => {
     if (selectedCategory !== 'all' || searchQuery.trim()) return null;
     const rows: { id: string; name: string; items: typeof seriesList }[] = [];
-    for (const cat of categories.slice(0, 12)) {
-      const items = seriesList.filter(s => s.category_id === cat.category_id).slice(0, 20);
+    for (const cat of categories.filter(category => !adultCategoryIds.has(category.category_id) || unlockedAdultCategories.has(category.category_id)).slice(0, 12)) {
+      const items = visibleSeries.filter(s => s.category_id === cat.category_id).slice(0, 20);
       if (items.length > 0) rows.push({ id: cat.category_id, name: cat.category_name, items });
     }
     return rows;
-  }, [seriesList, categories, selectedCategory, searchQuery]);
+  }, [visibleSeries, categories, selectedCategory, searchQuery, adultCategoryIds, unlockedAdultCategories]);
 
-  const heroSeries = seriesList[heroIndex];
+  const heroSeries = visibleSeries[heroIndex % Math.max(1, visibleSeries.length)];
 
   // ── Card renderer ──────────────────────────────────────────────────────────
   const renderCard = useCallback((item: typeof seriesList[0], listIndex?: number) => {
     const isWatched = watched.has(String(item.series_id));
+    const isFavorite = favorites.has(String(item.series_id));
     return (
       <TVFocusable
         key={`card-${item.series_id}`}
@@ -103,6 +155,8 @@ export default function SeriesScreen() {
         }}
         hasTVPreferredFocus={IS_TV && listIndex === 0}
         onPress={() => handleSeriesPress(item.series_id, item.name, item.cover)}
+        onLongPress={() => void toggleFavorite(item.series_id, item.name, item.cover)}
+        delayLongPress={550}
       >
         <View style={styles.posterWrap}>
           <View style={styles.posterClip}>
@@ -127,11 +181,14 @@ export default function SeriesScreen() {
               <Text style={styles.ratingText}>{item.rating_5based.toFixed(1)}</Text>
             </View>
           )}
+          <View pointerEvents="none" style={styles.favBtn}>
+            <Ionicons name={isFavorite ? 'heart' : 'heart-outline'} size={15} color={isFavorite ? '#E50000' : '#fff'} />
+          </View>
         </View>
         <Text style={styles.name} numberOfLines={2}>{item.name}</Text>
       </TVFocusable>
     );
-  }, [watched]);
+  }, [favorites, watched]);
 
   // ── Header component ───────────────────────────────────────────────────────
   const BrowseHeader = useMemo(() => (
@@ -170,7 +227,7 @@ export default function SeriesScreen() {
               </Pressable>
             </View>
             <View style={styles.heroDots}>
-              {Array.from({ length: Math.min(8, seriesList.length) }).map((_, i) => (
+              {Array.from({ length: Math.min(8, visibleSeries.length) }).map((_, i) => (
                 <View key={i} style={[styles.heroDot, i === heroIndex && styles.heroDotActive]} />
               ))}
             </View>
@@ -208,6 +265,7 @@ export default function SeriesScreen() {
       <View style={styles.categoryBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryContent}>
           <Pressable
+            testID="catalog-category-all"
             style={[styles.chip, selectedCategory === 'all' && styles.chipActive]}
             onPress={() => selectCategory('all')}
           >
@@ -216,8 +274,9 @@ export default function SeriesScreen() {
           {categories.map(cat => (
             <Pressable
               key={cat.category_id}
+              testID={`catalog-category-${cat.category_id}`}
               style={[styles.chip, selectedCategory === cat.category_id && styles.chipActive]}
-              onPress={() => selectCategory(cat.category_id)}
+              onPress={() => selectProtectedCategory(cat.category_id)}
             >
               <Text style={[styles.chipText, selectedCategory === cat.category_id && styles.chipTextActive]}>
                 {cat.category_name}
@@ -262,7 +321,7 @@ export default function SeriesScreen() {
         <View style={{ height: 8 }} />
       ) : null}
     </View>
-  ), [heroSeries, heroIndex, seriesList.length, searchQuery, selectedCategory, categories, categoryRows, watched]);
+  ), [heroSeries, heroIndex, visibleSeries.length, searchQuery, selectedCategory, categories, categoryRows, favorites, watched, selectProtectedCategory]);
 
   if (loading) {
     return (
@@ -274,10 +333,39 @@ export default function SeriesScreen() {
   }
 
   // ── History tab ────────────────────────────────────────────────────────────
+  if (activeTab === 'favorites') {
+    return (
+      <View style={styles.container}>
+        <SeriesTabHeader activeTab={activeTab} count={seriesList.length} onChange={setActiveTab} onDataLoad={loadFavoritesAndHistory} />
+        <FlatList
+          data={favoriteItems}
+          keyExtractor={item => `fav-${item.id}`}
+          numColumns={NUM_COLS}
+          key={`fav-series-${NUM_COLS}`}
+          contentContainerStyle={styles.grid}
+          columnWrapperStyle={NUM_COLS > 1 ? { gap: 8, justifyContent: 'flex-start' } : undefined}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item }) => {
+            const series = seriesList.find(entry => String(entry.series_id) === item.id);
+            return series ? renderCard(series) : (
+              <View style={styles.card}>
+                <View style={[styles.posterWrap, styles.posterPlaceholder]}>
+                  {item.poster ? <Image source={{ uri: item.poster }} style={styles.poster} contentFit="cover" /> : <MaterialIcons name="video-library" size={24} color={Colors.textMuted} />}
+                </View>
+                <Text style={styles.name} numberOfLines={2}>{item.name}</Text>
+              </View>
+            );
+          }}
+          ListEmptyComponent={<EmptyState label="Sem favoritos" icon="heart-outline" />}
+        />
+      </View>
+    );
+  }
+
   if (activeTab === 'history') {
     return (
       <View style={styles.container}>
-        <SeriesTabHeader activeTab={activeTab} count={seriesList.length} onChange={setActiveTab} onHistoryLoad={loadHistory} />
+        <SeriesTabHeader activeTab={activeTab} count={seriesList.length} onChange={setActiveTab} onDataLoad={loadFavoritesAndHistory} />
         <FlatList
           data={historyItems}
           keyExtractor={item => `hist-${item.id}-${item.watchedAt}`}
@@ -326,12 +414,13 @@ export default function SeriesScreen() {
   const showGrid = !categoryRows || !!searchQuery.trim();
 
   return (
+    <>
     <View style={styles.container}>
-      <SeriesTabHeader activeTab={activeTab} count={seriesList.length} onChange={setActiveTab} onHistoryLoad={loadHistory} />
+      <SeriesTabHeader activeTab={activeTab} count={seriesList.length} onChange={setActiveTab} onDataLoad={loadFavoritesAndHistory} />
       {showGrid ? (
         <FlatList
           ref={mainListRef}
-          data={seriesList}
+          data={visibleSeries}
           keyExtractor={item => `g-${item.series_id}`}
           numColumns={NUM_COLS}
           key={`grid-s-${NUM_COLS}`}
@@ -360,17 +449,25 @@ export default function SeriesScreen() {
         />
       )}
     </View>
+    <AdultPinModal visible={adultPinVisible} onCancel={() => { setAdultPinVisible(false); setPendingAdultCategory(null); }} onUnlock={() => {
+      if (pendingAdultCategory) {
+        setUnlockedAdultCategories(previous => new Set(previous).add(pendingAdultCategory));
+        selectCategory(pendingAdultCategory);
+      }
+      setAdultPinVisible(false); setPendingAdultCategory(null);
+    }} />
+    </>
   );
 }
 
 // ── Tab Header ──────────────────────────────────────────────────────────────
 function SeriesTabHeader({
-  activeTab, count, onChange, onHistoryLoad,
+  activeTab, count, onChange, onDataLoad,
 }: {
   activeTab: ActiveTab;
   count: number;
   onChange: (tab: ActiveTab) => void;
-  onHistoryLoad: () => void;
+  onDataLoad: () => void;
 }) {
   return (
     <>
@@ -379,20 +476,20 @@ function SeriesTabHeader({
         <Text style={styles.countBadge}>{count}</Text>
       </View>
       <View style={styles.tabRow}>
-        {(['browse', 'history'] as ActiveTab[]).map(tab => (
+        {(['browse', 'favorites', 'history'] as ActiveTab[]).map(tab => (
           <TVFocusable
             key={tab}
             style={[styles.tab, activeTab === tab && styles.tabActive]}
             focusedStyle={{ borderColor: '#E50000', borderWidth: 2, shadowColor: '#E50000', shadowOpacity: 0.7, shadowRadius: 8 }}
-            onPress={() => { onChange(tab); if (tab === 'history') onHistoryLoad(); }}
+            onPress={() => { onChange(tab); if (tab !== 'browse') onDataLoad(); }}
           >
             <Ionicons
-              name={tab === 'browse' ? 'grid-outline' : 'time-outline'}
+              name={tab === 'browse' ? 'grid-outline' : tab === 'favorites' ? 'heart' : 'time-outline'}
               size={13}
               color={activeTab === tab ? '#fff' : Colors.textMuted}
             />
             <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
-              {tab === 'browse' ? 'Navegar' : 'Histórico'}
+              {tab === 'browse' ? 'Navegar' : tab === 'favorites' ? 'Favoritos' : 'Histórico'}
             </Text>
           </TVFocusable>
         ))}
@@ -401,20 +498,20 @@ function SeriesTabHeader({
   );
 }
 
-function EmptyState() {
+function EmptyState({ label = 'Nenhuma série encontrada', icon = 'video-library' }: { label?: string; icon?: string }) {
   return (
     <View style={{ alignItems: 'center', paddingTop: 60 }}>
-      <MaterialIcons name="video-library" size={52} color={Colors.textMuted} />
+      <MaterialIcons name={icon as any} size={52} color={Colors.textMuted} />
       <Text style={{ color: Colors.textSecondary, fontSize: 15, fontWeight: '600', marginTop: 12 }}>
-        Nenhuma série encontrada
+        {label}
       </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg },
-  centered: { flex: 1, backgroundColor: Colors.bg, alignItems: 'center', justifyContent: 'center' },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  centered: { flex: 1, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 14, paddingVertical: 10,
@@ -431,7 +528,7 @@ const styles = StyleSheet.create({
   tab: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
-    backgroundColor: Colors.bgCardElevated, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: 'transparent', borderWidth: 0,
   },
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { color: Colors.textMuted, fontSize: 11, fontWeight: '500' },
@@ -462,19 +559,19 @@ const styles = StyleSheet.create({
   // Search
   searchContainer: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.bgInput, marginHorizontal: 14, marginTop: 8,
+    backgroundColor: 'transparent', marginHorizontal: 14, marginTop: 8,
     borderRadius: 10, paddingHorizontal: 10, height: 36,
-    borderWidth: 1, borderColor: Colors.border, gap: 8,
+    borderWidth: 0, gap: 8,
   },
   searchInput: { flex: 1, color: Colors.textPrimary, fontSize: 13 },
-  categoryBar: { height: 42, marginTop: 4 },
-  categoryContent: { paddingHorizontal: 14, alignItems: 'center', gap: 6 },
+  categoryBar: { height: IS_TV ? 66 : 42, marginTop: 4 },
+  categoryContent: { paddingHorizontal: IS_TV ? 18 : 14, alignItems: 'center', gap: IS_TV ? 12 : 6 },
   chip: {
-    paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999,
-    backgroundColor: Colors.bgCardElevated, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: IS_TV ? 20 : 12, paddingVertical: IS_TV ? 12 : 5, borderRadius: 999,
+    backgroundColor: 'transparent', borderWidth: 0,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { color: Colors.textSecondary, fontSize: 11, fontWeight: '500' },
+  chipText: { color: Colors.textSecondary, fontSize: IS_TV ? 17 : 11, fontWeight: '600' },
   chipTextActive: { color: '#fff', fontWeight: '700' },
   categoryRow: { marginTop: 14 },
   categoryRowHeader: {
@@ -509,17 +606,23 @@ const styles = StyleSheet.create({
     position: 'absolute', top: 4, right: 4,
     backgroundColor: 'rgba(229,0,0,0.85)', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1,
   },
+  favBtn: {
+    position: 'absolute', right: 4, bottom: 4,
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.72)', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
+  },
   ratingText: { color: '#fff', fontSize: 8, fontWeight: '700' },
   name: { color: Colors.textSecondary, fontSize: 10, textAlign: 'center', lineHeight: 13 },
   // History
   historyRow: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.bgCard, borderRadius: 10, padding: 10,
-    marginBottom: 8, borderWidth: 1, borderColor: Colors.border, gap: 10,
+    backgroundColor: 'transparent', borderRadius: 10, padding: 10,
+    marginBottom: 8, borderWidth: 0, gap: 10,
   },
   historyThumb: {
     width: 46, height: 62, borderRadius: 6,
-    backgroundColor: Colors.bgCardElevated, overflow: 'hidden',
+    backgroundColor: 'rgba(7,7,7,0.20)', overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
   },
   historyName: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600', marginBottom: 3 },

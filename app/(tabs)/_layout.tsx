@@ -2,39 +2,35 @@
  * GBTVON — Main Layout
  * Side navigation (vertical, right panel) for landscape mode.
  * Works on phones, TV Box, Android TV, Fire TV.
- *
- * DevDPad overlay is rendered here so it's available across ALL tabs.
  */
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, Platform, BackHandler } from 'react-native';
+import { View, Text, StyleSheet, Platform, BackHandler } from 'react-native';
 import { Image } from 'expo-image';
 import TVFocusable from '@/components/ui/TVFocusable';
-import DevDPad from '@/components/ui/DevDPad';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { IS_TV, TV } from '@/hooks/useTV';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'expo-router';
-import { useDevMode } from '@/contexts/DevModeContext';
 import NotificationBanner from '@/components/ui/NotificationBanner';
 import LiveTVScreen from './index';
 import MoviesScreen from './movies';
 import SeriesScreen from './series';
+import GamesScreen from './games';
 import ProfileScreen from './profile';
+import { useLiveTV } from '@/hooks/useLiveTV';
 
-type TabId = 'live' | 'movies' | 'series' | 'profile';
+type TabId = 'live' | 'movies' | 'series' | 'games' | 'profile';
 
 /** Individual sidebar tab — tracks own focus state so activeIndicator follows D-Pad */
 function SidebarTab({
   tab,
   active,
-  onFocus,
   onPress,
 }: {
   tab: { id: TabId; label: string; icon: string; activeIcon: string };
   active: boolean;
-  onFocus: () => void;
   onPress: () => void;
 }) {
   const [isFocused, setIsFocused] = useState(false);
@@ -58,7 +54,9 @@ function SidebarTab({
       }}
       focusScale={IS_TV ? 1.07 : 1.0}
       overlayBorderRadius={12}
-      onFocus={() => { setIsFocused(true); onFocus(); }}
+      // Focus only highlights the destination. The screen changes on OK,
+      // so a sideways move can never throw the user into another tab.
+      onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
       onPress={onPress}
     >
@@ -72,9 +70,9 @@ function SidebarTab({
         style={[
           styles.navLabel,
           (active || isFocused) && styles.navLabelActive,
-          IS_TV && { fontSize: 11 },
+          IS_TV && { fontSize: 14, lineHeight: 17 },
         ]}
-        numberOfLines={1}
+        numberOfLines={2}
       >
         {tab.label}
       </Text>
@@ -86,16 +84,20 @@ const TABS: { id: TabId; label: string; icon: string; activeIcon: string }[] = [
   { id: 'live',    label: 'TV ao Vivo', icon: 'tv-outline',           activeIcon: 'tv' },
   { id: 'movies',  label: 'Filmes',     icon: 'film-outline',          activeIcon: 'film' },
   { id: 'series',  label: 'Séries',     icon: 'videocam-outline',      activeIcon: 'videocam' },
+  { id: 'games',   label: 'Jogos de Hoje', icon: 'calendar-outline',   activeIcon: 'calendar' },
   { id: 'profile', label: 'Perfil',     icon: 'person-circle-outline', activeIcon: 'person-circle' },
 ];
 
-const SIDEBAR_W = IS_TV ? 90 : 72;
+const SIDEBAR_W = IS_TV ? 142 : 96;
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabId>('live');
-  const { isAuthenticated, activationStatus, blockReasonDetail, devicePrice } = useAuth();
-  const { devMode } = useDevMode();
+  const { isAuthenticated, activationStatus, blockReasonDetail, devicePrice, isDemoMode } = useAuth();
+  // The calendar is personal: it exists only after the customer has a real
+  // channel list. Demo mode intentionally keeps the navigation compact.
+  const { getAllNumberedChannels, loading: channelCatalogLoading } = useLiveTV();
+  const hasChannelList = !isDemoMode && !channelCatalogLoading && getAllNumberedChannels().length > 0;
   const router = useRouter();
   const lastStatusRef = useRef(activationStatus);
 
@@ -135,11 +137,19 @@ export default function TabLayout() {
 
   return (
     <View style={styles.root}>
+      <Image
+        source={require('@/assets/images/app-background.jpg')}
+        style={styles.appBackground}
+        contentFit="cover"
+        transition={0}
+      />
+      <View pointerEvents="none" style={styles.backgroundVeil} />
       {/* ── Main Content Area ──────────────────────────────────────── */}
       <View style={styles.content}>
         {activeTab === 'live'    && <LiveTVScreen />}
         {activeTab === 'movies'  && <MoviesScreen />}
         {activeTab === 'series'  && <SeriesScreen />}
+        {activeTab === 'games'   && hasChannelList && <GamesScreen />}
         {activeTab === 'profile' && <ProfileScreen />}
         <NotificationBanner />
       </View>
@@ -152,7 +162,7 @@ export default function TabLayout() {
           paddingTop: Math.max(insets.top + 8, IS_TV ? 20 : 12),
           paddingBottom: Math.max(insets.bottom + 8, IS_TV ? 20 : 12),
         },
-      ]}>
+      ]} nativeID="main-sidebar">
         {/* Logo at top */}
         <View style={styles.sidebarLogo}>
           <Image source={require('@/assets/images/icon.png')} style={styles.logoImage} contentFit="contain" />
@@ -162,14 +172,13 @@ export default function TabLayout() {
 
         {/* Nav items */}
         <View style={styles.navItems}>
-          {TABS.map(tab => {
+          {TABS.filter(tab => tab.id !== 'games' || hasChannelList).map(tab => {
             const active = activeTab === tab.id;
             return (
               <SidebarTab
                 key={tab.id}
                 tab={tab}
                 active={active}
-                onFocus={() => setActiveTab(tab.id)}
                 onPress={() => setActiveTab(tab.id)}
               />
             );
@@ -185,12 +194,6 @@ export default function TabLayout() {
         </View>
       </View>
 
-      {/* ── Developer D-Pad Overlay — visible across ALL tabs ────── */}
-      {devMode && (
-        <View style={styles.devOverlay} pointerEvents="box-none">
-          <DevDPad />
-        </View>
-      )}
     </View>
   );
 }
@@ -201,12 +204,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row-reverse',
     backgroundColor: '#000',
   },
+  appBackground: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  backgroundVeil: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
   content: {
     flex: 1,
-    backgroundColor: Colors.bg,
+    backgroundColor: 'transparent',
   },
   sidebar: {
-    backgroundColor: '#0a0a0a',
+    backgroundColor: 'rgba(0,0,0,0.28)',
     borderRightWidth: 1,
     borderRightColor: 'rgba(229,0,0,0.18)',
     alignItems: 'center',
@@ -216,15 +226,15 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   logoImage: {
-    width: IS_TV ? 48 : 38,
-    height: IS_TV ? 48 : 38,
-    borderRadius: IS_TV ? 14 : 11,
+    width: IS_TV ? 94 : 68,
+    height: IS_TV ? 94 : 68,
+    borderRadius: IS_TV ? 22 : 16,
   },
   navItems: {
     width: '100%',
     alignItems: 'center',
-    gap: IS_TV ? 6 : 4,
-    paddingHorizontal: IS_TV ? 6 : 4,
+    gap: IS_TV ? 10 : 4,
+    paddingHorizontal: IS_TV ? 8 : 4,
   },
   navItem: {
     width: '100%',
@@ -237,8 +247,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   navItemTV: {
-    paddingVertical: 16,
-    borderRadius: 14,
+    paddingVertical: 19,
+    borderRadius: 16,
   },
   navItemActive: {
     backgroundColor: 'rgba(229,0,0,0.12)',
@@ -247,7 +257,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: '20%',
-    width: 3,
+    width: 5,
     height: '60%',
     backgroundColor: Colors.primary,
     borderTopRightRadius: 3,
@@ -255,7 +265,7 @@ const styles = StyleSheet.create({
   },
   navLabel: {
     color: 'rgba(255,255,255,0.4)',
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '600',
     textAlign: 'center',
     letterSpacing: 0.2,
@@ -270,14 +280,14 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   liveDot: {
-    width: 7,
-    height: 7,
+    width: IS_TV ? 9 : 7,
+    height: IS_TV ? 9 : 7,
     borderRadius: 4,
     backgroundColor: Colors.primary,
   },
   liveLabel: {
     color: Colors.primary,
-    fontSize: 8,
+    fontSize: IS_TV ? 10 : 8,
     fontWeight: '800',
     letterSpacing: 1,
   },

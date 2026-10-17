@@ -99,13 +99,13 @@ export async function isAdultBlocked(): Promise<boolean> {
   try {
     const raw = await AsyncStorage.getItem(ADULT_BLOCK_KEY);
     if (raw === null) {
-      // Default: NOT blocked — client decides if they want to hide
-      await AsyncStorage.setItem(ADULT_BLOCK_KEY, 'false');
-      return false;
+      // Adult groups always start protected. The default PIN is 0000.
+      await AsyncStorage.setItem(ADULT_BLOCK_KEY, 'true');
+      return true;
     }
     return raw === 'true';
   } catch {
-    return false;
+    return true;
   }
 }
 

@@ -28,6 +28,8 @@ import {
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import TVCatalogSearch from '@/components/ui/TVCatalogSearch';
+import AdultPinModal from '@/components/ui/AdultPinModal';
+import { isAdultCategory } from '@/services/channelFilterService';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const CARD_W = IS_TV ? 160 : 110;
@@ -63,6 +65,9 @@ export default function MoviesScreen() {
   const [favoriteItems, setFavoriteItems] = useState<FavoriteItem[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [heroIndex, setHeroIndex] = useState(0);
+  const [adultPinVisible, setAdultPinVisible] = useState(false);
+  const [pendingAdultCategory, setPendingAdultCategory] = useState<string | null>(null);
+  const [unlockedAdultCategories, setUnlockedAdultCategories] = useState<Set<string>>(new Set());
   const heroTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Refs for TV D-Pad focus-based scrolling
   const mainListRef = useRef<FlatList>(null);
@@ -76,6 +81,15 @@ export default function MoviesScreen() {
     }, 5000);
     return () => { if (heroTimer.current) clearInterval(heroTimer.current); };
   }, [movies.length]);
+
+  const adultCategoryIds = useMemo(() => new Set(categories.filter(category => isAdultCategory(category.category_name)).map(category => category.category_id)), [categories]);
+  const visibleMovies = useMemo(() => movies.filter(movie => !adultCategoryIds.has(movie.category_id) || unlockedAdultCategories.has(movie.category_id)), [adultCategoryIds, movies, unlockedAdultCategories]);
+  const selectProtectedCategory = useCallback((categoryId: string) => {
+    if (adultCategoryIds.has(categoryId) && !unlockedAdultCategories.has(categoryId)) {
+      setPendingAdultCategory(categoryId); setAdultPinVisible(true); return;
+    }
+    selectCategory(categoryId);
+  }, [adultCategoryIds, selectCategory, unlockedAdultCategories]);
 
   async function loadFavoritesAndHistory() {
     const [favs, hist] = await Promise.all([getFavorites(), getHistory()]);
@@ -116,14 +130,14 @@ export default function MoviesScreen() {
   const categoryRows = useMemo(() => {
     if (selectedCategory !== 'all' || searchQuery.trim()) return null;
     const rows: { id: string; name: string; items: typeof movies }[] = [];
-    for (const cat of categories.slice(0, 12)) {
-      const items = movies.filter(m => m.category_id === cat.category_id).slice(0, 20);
+    for (const cat of categories.filter(category => !adultCategoryIds.has(category.category_id) || unlockedAdultCategories.has(category.category_id)).slice(0, 12)) {
+      const items = visibleMovies.filter(m => m.category_id === cat.category_id).slice(0, 20);
       if (items.length > 0) rows.push({ id: cat.category_id, name: cat.category_name, items });
     }
     return rows;
-  }, [movies, categories, selectedCategory, searchQuery]);
+  }, [visibleMovies, categories, selectedCategory, searchQuery, adultCategoryIds, unlockedAdultCategories]);
 
-  const heroMovie = movies[heroIndex];
+  const heroMovie = visibleMovies[heroIndex % Math.max(1, visibleMovies.length)];
 
   // ── Card renderer ─────────────────────────────────────────────────────────
   const renderMovieCard = useCallback((item: typeof movies[0], listIndex?: number) => {
@@ -148,6 +162,8 @@ export default function MoviesScreen() {
         onPress={() =>
           handlePlay(item.stream_id, item.name, item.container_extension, item.stream_icon, item.direct_source)
         }
+        onLongPress={() => void toggleFavorite(item.stream_id, item.name, item.stream_icon)}
+        delayLongPress={550}
       >
         <View style={styles.posterWrap}>
           <View style={styles.posterClip}>
@@ -169,17 +185,13 @@ export default function MoviesScreen() {
               <Text style={styles.ratingText}>{item.rating_5based.toFixed(1)}</Text>
             </View>
           )}
-          <Pressable
-            style={styles.favBtn}
-            onPress={() => toggleFavorite(item.stream_id, item.name, item.stream_icon)}
-            hitSlop={6}
-          >
+          <View pointerEvents="none" style={styles.favBtn}>
             <Ionicons
               name={isFav ? 'heart' : 'heart-outline'}
               size={14}
               color={isFav ? '#E50000' : 'rgba(255,255,255,0.7)'}
             />
-          </Pressable>
+          </View>
         </View>
         <Text style={styles.movieName} numberOfLines={2}>{item.name}</Text>
       </TVFocusable>
@@ -199,6 +211,8 @@ export default function MoviesScreen() {
           onPress={() =>
             handlePlay(heroMovie.stream_id, heroMovie.name, heroMovie.container_extension, heroMovie.stream_icon, heroMovie.direct_source)
           }
+          onLongPress={() => void toggleFavorite(heroMovie.stream_id, heroMovie.name, heroMovie.stream_icon)}
+          delayLongPress={550}
         >
           {heroMovie.stream_icon ? (
             <Image source={{ uri: heroMovie.stream_icon }} style={styles.heroPoster} contentFit="cover" transition={400} />
@@ -229,20 +243,17 @@ export default function MoviesScreen() {
                   <Ionicons name="play" size={16} color="#000" />
                   <Text style={styles.heroPlayText}>Assistir</Text>
                 </Pressable>
-                <Pressable
-                  style={styles.heroFavBtn}
-                  onPress={() => toggleFavorite(heroMovie.stream_id, heroMovie.name, heroMovie.stream_icon)}
-                >
+                <View pointerEvents="none" style={styles.heroFavBtn}>
                   <Ionicons
                     name={favorites.has(String(heroMovie.stream_id)) ? 'heart' : 'heart-outline'}
                     size={16}
                     color="#fff"
                   />
-                </Pressable>
+                </View>
               </View>
             </View>
             <View style={styles.heroDots}>
-              {Array.from({ length: Math.min(8, movies.length) }).map((_, i) => (
+              {Array.from({ length: Math.min(8, visibleMovies.length) }).map((_, i) => (
                 <View key={i} style={[styles.heroDot, i === heroIndex && styles.heroDotActive]} />
               ))}
             </View>
@@ -275,6 +286,7 @@ export default function MoviesScreen() {
       <View style={styles.categoryBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryContent}>
           <Pressable
+            testID="catalog-category-all"
             style={[styles.chip, selectedCategory === 'all' && styles.chipActive]}
             onPress={() => selectCategory('all')}
           >
@@ -283,8 +295,9 @@ export default function MoviesScreen() {
           {categories.map(cat => (
             <Pressable
               key={cat.category_id}
+              testID={`catalog-category-${cat.category_id}`}
               style={[styles.chip, selectedCategory === cat.category_id && styles.chipActive]}
-              onPress={() => selectCategory(cat.category_id)}
+              onPress={() => selectProtectedCategory(cat.category_id)}
             >
               <Text style={[styles.chipText, selectedCategory === cat.category_id && styles.chipTextActive]}>
                 {cat.category_name}
@@ -330,7 +343,7 @@ export default function MoviesScreen() {
         <View style={styles.gridPadding} />
       ) : null}
     </View>
-  ), [heroMovie, heroIndex, movies.length, searchQuery, selectedCategory, categories, categoryRows, favorites, watched]);
+  ), [heroMovie, heroIndex, visibleMovies.length, searchQuery, selectedCategory, categories, categoryRows, favorites, watched, selectProtectedCategory]);
 
   if (loading) {
     return (
@@ -428,6 +441,7 @@ export default function MoviesScreen() {
   const showGrid = !categoryRows || !!searchQuery.trim();
 
   return (
+    <>
     <View style={styles.container}>
       <TabHeader
         activeTab={activeTab}
@@ -438,7 +452,7 @@ export default function MoviesScreen() {
         // Flat grid mode (search or category selected)
         <FlatList
           ref={mainListRef}
-          data={movies}
+          data={visibleMovies}
           keyExtractor={item => `g-${item.stream_id}`}
           numColumns={NUM_COLS}
           key={`grid-${NUM_COLS}`}
@@ -468,6 +482,14 @@ export default function MoviesScreen() {
         />
       )}
     </View>
+    <AdultPinModal visible={adultPinVisible} onCancel={() => { setAdultPinVisible(false); setPendingAdultCategory(null); }} onUnlock={() => {
+      if (pendingAdultCategory) {
+        setUnlockedAdultCategories(previous => new Set(previous).add(pendingAdultCategory));
+        selectCategory(pendingAdultCategory);
+      }
+      setAdultPinVisible(false); setPendingAdultCategory(null);
+    }} />
+    </>
   );
 }
 
@@ -520,8 +542,8 @@ function EmptyState({ icon, label }: { icon: string; label: string }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg },
-  centered: { flex: 1, backgroundColor: Colors.bg, alignItems: 'center', justifyContent: 'center' },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  centered: { flex: 1, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 14, paddingVertical: 10,
@@ -538,7 +560,7 @@ const styles = StyleSheet.create({
   tab: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
-    backgroundColor: Colors.bgCardElevated, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: 'transparent', borderWidth: 0,
   },
   tabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   tabText: { color: Colors.textMuted, fontSize: 11, fontWeight: '500' },
@@ -574,19 +596,19 @@ const styles = StyleSheet.create({
   // Search & filters
   searchContainer: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.bgInput, marginHorizontal: 14, marginTop: 8,
+    backgroundColor: 'transparent', marginHorizontal: 14, marginTop: 8,
     borderRadius: 10, paddingHorizontal: 10, height: 36,
-    borderWidth: 1, borderColor: Colors.border, gap: 8,
+    borderWidth: 0, gap: 8,
   },
   searchInput: { flex: 1, color: Colors.textPrimary, fontSize: 13 },
-  categoryBar: { height: 42, marginTop: 4 },
-  categoryContent: { paddingHorizontal: 14, alignItems: 'center', gap: 6 },
+  categoryBar: { height: IS_TV ? 66 : 42, marginTop: 4 },
+  categoryContent: { paddingHorizontal: IS_TV ? 18 : 14, alignItems: 'center', gap: IS_TV ? 12 : 6 },
   chip: {
-    paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999,
-    backgroundColor: Colors.bgCardElevated, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: IS_TV ? 20 : 12, paddingVertical: IS_TV ? 12 : 5, borderRadius: 999,
+    backgroundColor: 'transparent', borderWidth: 0,
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  chipText: { color: Colors.textSecondary, fontSize: 11, fontWeight: '500' },
+  chipText: { color: Colors.textSecondary, fontSize: IS_TV ? 17 : 11, fontWeight: '600' },
   chipTextActive: { color: '#fff', fontWeight: '700' },
   // Category rows
   categoryRow: { marginTop: 14 },
@@ -628,12 +650,12 @@ const styles = StyleSheet.create({
   // History
   historyRow: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.bgCard, borderRadius: 10, padding: 10,
-    marginBottom: 8, borderWidth: 1, borderColor: Colors.border, gap: 10,
+    backgroundColor: 'transparent', borderRadius: 10, padding: 10,
+    marginBottom: 8, borderWidth: 0, gap: 10,
   },
   historyThumb: {
     width: 46, height: 62, borderRadius: 6,
-    backgroundColor: Colors.bgCardElevated, overflow: 'hidden',
+    backgroundColor: 'rgba(7,7,7,0.20)', overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
   },
   historyName: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600', marginBottom: 3 },

@@ -10,6 +10,7 @@ import {
   ScrollView,
   Dimensions,
   Platform,
+  Modal,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -18,7 +19,7 @@ import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import { getLiveCategories, getLiveStreams, LiveCategory } from '@/services/xtreamApi';
 import { groupChannels, GroupedChannel } from '@/services/channelGrouper';
-import { loadFilterState, isAdultCategory } from '@/services/channelFilterService';
+import { loadFilterState, isAdultCategory, setAdultBlocked, verifyParentalPin } from '@/services/channelFilterService';
 import {
   saveSelectedChannelKeys,
   markSetupDone,
@@ -26,10 +27,18 @@ import {
   getSelectedChannelKeys,
 } from '@/services/channelSetupService';
 import { useAuth } from '@/hooks/useAuth';
+import { IS_TV } from '@/hooks/useTV';
+import TVFocusable from '@/components/ui/TVFocusable';
 
 const { width, height } = Dimensions.get('window');
-const COLS = width > 900 ? 5 : width > 600 ? 4 : 3;
-const CARD_W = (width - 32 - (COLS - 1) * 10) / COLS;
+// Percentage widths stay correct after webOS applies the TV zoom. Two large
+// channel cards are easier to recognize than a compressed many-column grid.
+const COLS = 2;
+const CARD_W = '47%';
+
+function isFeaturedGamesCategory(name: string): boolean {
+  return /jogos?.*(destaque|hoje)|(?:destaque).*jogos?/i.test(name);
+}
 
 export default function ChannelSetupScreen() {
   const insets = useSafeAreaInsets();
@@ -45,6 +54,11 @@ export default function ChannelSetupScreen() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [step, setStep] = useState<'select' | 'confirm'>('select');
+  const [featuredCategoryIds, setFeaturedCategoryIds] = useState<Set<string>>(new Set());
+  const [adultBlocked, setAdultBlockedState] = useState(false);
+  const [adultPinVisible, setAdultPinVisible] = useState(false);
+  const [adultPin, setAdultPin] = useState('');
+  const [adultPinError, setAdultPinError] = useState('');
 
   useEffect(() => {
     loadChannels();
@@ -52,7 +66,7 @@ export default function ChannelSetupScreen() {
 
   useEffect(() => {
     applyFilter(allChannels, selectedCat, search);
-  }, [selectedCat, search, allChannels]);
+  }, [selectedCat, search, allChannels, categories, adultBlocked]);
 
   async function loadChannels() {
     if (!auth) return;
@@ -67,10 +81,12 @@ export default function ChannelSetupScreen() {
 
       const visibleCats = cats.filter(c => {
         if (filters.hiddenCategories.includes(c.category_id)) return false;
-        if (filters.adultBlocked && isAdultCategory(c.category_name)) return false;
         return true;
       });
       setCategories(visibleCats);
+      setAdultBlockedState(filters.adultBlocked);
+      const featuredIds = new Set(cats.filter(c => isFeaturedGamesCategory(c.category_name)).map(c => c.category_id));
+      setFeaturedCategoryIds(featuredIds);
 
       const grouped = groupChannels(streams).filter(g => {
         const key = makeChannelKey(g.baseName, g.categoryId);
@@ -80,9 +96,12 @@ export default function ChannelSetupScreen() {
       setFiltered(grouped);
 
       // Pre-select if already configured
-      if (existingKeys.size > 0) {
-        setSelected(new Set(existingKeys));
-      }
+      // The games-highlight group is part of every customer list by design.
+      // It stays selected even if the customer marks/demarks other groups.
+      const automaticKeys = grouped
+        .filter(channel => featuredIds.has(channel.categoryId))
+        .map(channel => makeChannelKey(channel.baseName, channel.categoryId));
+      setSelected(new Set([...(existingKeys.size > 0 ? existingKeys : []), ...automaticKeys]));
     } catch {
       // ignore
     } finally {
@@ -93,6 +112,10 @@ export default function ChannelSetupScreen() {
   function applyFilter(channels: GroupedChannel[], catId: string, q: string) {
     let res = channels;
     if (catId !== 'all') res = res.filter(c => c.categoryId === catId);
+    if (adultBlocked) {
+      const adultCategoryIds = new Set(categories.filter(item => isAdultCategory(item.category_name)).map(item => item.category_id));
+      res = res.filter(channel => !adultCategoryIds.has(channel.categoryId));
+    }
     if (q.trim()) {
       const lq = q.toLowerCase();
       res = res.filter(c => c.baseName.toLowerCase().includes(lq));
@@ -101,6 +124,7 @@ export default function ChannelSetupScreen() {
   }
 
   function toggleChannel(channel: GroupedChannel) {
+    if (featuredCategoryIds.has(channel.categoryId)) return;
     const key = makeChannelKey(channel.baseName, channel.categoryId);
     setSelected(prev => {
       const next = new Set(prev);
@@ -121,12 +145,21 @@ export default function ChannelSetupScreen() {
   function deselectAllVisible() {
     setSelected(prev => {
       const next = new Set(prev);
-      filtered.forEach(c => next.delete(makeChannelKey(c.baseName, c.categoryId)));
+      filtered.forEach(c => {
+        if (!featuredCategoryIds.has(c.categoryId)) next.delete(makeChannelKey(c.baseName, c.categoryId));
+      });
       return next;
     });
   }
 
   function selectCategory(catId: string) {
+    const category = categories.find(item => item.category_id === catId);
+    if (adultBlocked && category && isAdultCategory(category.category_name)) {
+      setAdultPin('');
+      setAdultPinError('');
+      setAdultPinVisible(true);
+      return;
+    }
     // Select all channels of this category
     const catChannels = allChannels.filter(c => c.categoryId === catId);
     setSelected(prev => {
@@ -140,7 +173,10 @@ export default function ChannelSetupScreen() {
     setSaving(true);
     try {
       // If nothing selected, select all
-      const toSave = selected.size > 0 ? selected : new Set(allChannels.map(c => makeChannelKey(c.baseName, c.categoryId)));
+      const toSave = selected.size > 0 ? new Set(selected) : new Set(allChannels.map(c => makeChannelKey(c.baseName, c.categoryId)));
+      allChannels.filter(channel => featuredCategoryIds.has(channel.categoryId)).forEach(channel => {
+        toSave.add(makeChannelKey(channel.baseName, channel.categoryId));
+      });
       await saveSelectedChannelKeys(toSave);
       await markSetupDone();
       router.replace('/(tabs)');
@@ -157,6 +193,30 @@ export default function ChannelSetupScreen() {
     await saveSelectedChannelKeys(allKeys);
     await markSetupDone();
     router.replace('/(tabs)');
+  }
+
+  async function toggleAdultCategory(category: LiveCategory) {
+    if (!isAdultCategory(category.category_name)) return;
+    if (adultBlocked) {
+      setAdultPin('');
+      setAdultPinError('');
+      setAdultPinVisible(true);
+      return;
+    }
+    await setAdultBlocked(true);
+    setAdultBlockedState(true);
+    setSelectedCat('all');
+    // Protected channels must not remain in a saved customer list after lock.
+    const adultIds = new Set(categories.filter(item => isAdultCategory(item.category_name)).map(item => item.category_id));
+    setSelected(previous => new Set([...previous].filter(key => ![...adultIds].some(id => key.startsWith(`${id}::`)))));
+  }
+
+  async function unlockAdultCategory() {
+    if (adultPin.length !== 4) { setAdultPinError('Digite os 4 números do PIN'); return; }
+    if (!(await verifyParentalPin(adultPin))) { setAdultPinError('PIN incorreto'); return; }
+    await setAdultBlocked(false);
+    setAdultBlockedState(false);
+    setAdultPinVisible(false);
   }
 
   const selectedCount = selected.size;
@@ -230,104 +290,127 @@ export default function ChannelSetupScreen() {
         </Pressable>
       </View>
 
-      {/* CATEGORIES */}
-      <View style={styles.catBarWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.catBar}>
-          <Pressable
+      {/* CATEGORY SIDEBAR + CHANNEL GRID */}
+      <View style={styles.setupBody}>
+        <ScrollView
+          style={styles.categorySidebar}
+          contentContainerStyle={styles.catBar}
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.categoryTitle}>GRUPOS</Text>
+          <TVFocusable
             style={[styles.catChip, selectedCat === 'all' && styles.catChipActive]}
             onPress={() => setSelectedCat('all')}
           >
-            <Text style={[styles.catChipText, selectedCat === 'all' && styles.catChipTextActive]}>
+            <Text numberOfLines={2} style={[styles.catChipText, selectedCat === 'all' && styles.catChipTextActive]}>
               Todos ({totalCount})
             </Text>
-          </Pressable>
+          </TVFocusable>
           {categories.map(cat => {
             const count = allChannels.filter(c => c.categoryId === cat.category_id).length;
             const isCatSel = selectedCat === cat.category_id;
             return (
-              <Pressable
+              <TVFocusable
                 key={cat.category_id}
                 style={[styles.catChip, isCatSel && styles.catChipActive]}
                 onPress={() => setSelectedCat(cat.category_id)}
-                onLongPress={() => selectCategory(cat.category_id)}
+                onLongPress={() => isAdultCategory(cat.category_name) ? void toggleAdultCategory(cat) : selectCategory(cat.category_id)}
                 delayLongPress={400}
               >
-                <Text style={[styles.catChipText, isCatSel && styles.catChipTextActive]}>
-                  {cat.category_name} ({count})
+                <Text numberOfLines={2} style={[styles.catChipText, isCatSel && styles.catChipTextActive]}>
+                  {cat.category_name}{featuredCategoryIds.has(cat.category_id) ? ' • sempre incluído' : adultBlocked && isAdultCategory(cat.category_name) ? ' • bloqueado' : ''} ({count})
                 </Text>
-              </Pressable>
+              </TVFocusable>
             );
           })}
         </ScrollView>
-      </View>
-
-      {/* HINT */}
-      <View style={styles.hintRow}>
-        <Ionicons name="information-circle-outline" size={13} color={Colors.textMuted} />
-        <Text style={styles.hintText}>  Toque para selecionar • Segure a categoria para selecionar todos</Text>
-      </View>
-
-      {/* CHANNEL GRID */}
-      <FlatList
-        data={filtered}
-        keyExtractor={item => `${item.categoryId}::${item.baseName}`}
-        numColumns={COLS}
-        key={`setup-grid-${COLS}`}
-        contentContainerStyle={styles.gridContent}
-        columnWrapperStyle={styles.gridRow}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => {
-          const key = makeChannelKey(item.baseName, item.categoryId);
-          const isSelected = selected.has(key);
-          return (
-            <Pressable
-              style={({ pressed }) => [
-                styles.channelCard,
-                { width: CARD_W },
-                isSelected && styles.channelCardSelected,
-                pressed && { opacity: 0.8 },
-              ]}
-              onPress={() => toggleChannel(item)}
-            >
-              {/* Selection indicator */}
-              <View style={[styles.checkCircle, isSelected && styles.checkCircleActive]}>
-                {isSelected && <Ionicons name="checkmark" size={11} color="#fff" />}
-              </View>
-
-              {/* Logo */}
-              <View style={styles.channelLogo}>
-                {item.icon ? (
-                  <Image source={{ uri: item.icon }} style={styles.channelLogoImg} contentFit="contain" />
-                ) : (
-                  <Ionicons name="tv" size={28} color={isSelected ? Colors.primary : Colors.textMuted} />
-                )}
-              </View>
-
-              {/* Name */}
-              <Text style={[styles.channelName, isSelected && styles.channelNameSelected]} numberOfLines={2}>
-                {item.baseName}
-              </Text>
-
-              {/* Quality badges */}
-              {item.qualities.length > 1 && (
-                <View style={styles.qRow}>
-                  {item.qualities.slice(0, 3).map(q => (
-                    <View key={q.label} style={[styles.qBadge, isSelected && styles.qBadgeSelected]}>
-                      <Text style={[styles.qBadgeText, isSelected && styles.qBadgeTextSelected]}>{q.label}</Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-            </Pressable>
-          );
-        }}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <MaterialIcons name="live-tv" size={52} color={Colors.textMuted} />
-            <Text style={styles.emptyText}>Nenhum canal encontrado</Text>
+        <View style={styles.gridArea}>
+          <View style={styles.hintRow}>
+            <Ionicons name="information-circle-outline" size={13} color={Colors.textMuted} />
+            <Text style={styles.hintText}>  Escolha um grupo e selecione os canais</Text>
           </View>
-        }
-      />
+          <FlatList
+            data={filtered}
+            keyExtractor={item => `${item.categoryId}::${item.baseName}`}
+            numColumns={COLS}
+            key={`setup-grid-${COLS}`}
+            contentContainerStyle={styles.gridContent}
+            columnWrapperStyle={styles.gridRow}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => {
+              const key = makeChannelKey(item.baseName, item.categoryId);
+              const isSelected = selected.has(key);
+              return (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.channelCard,
+                    { width: CARD_W },
+                    isSelected && styles.channelCardSelected,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                  onPress={() => toggleChannel(item)}
+                >
+                  {/* Selection indicator */}
+                  <View style={[styles.checkCircle, isSelected && styles.checkCircleActive]}>
+                    {isSelected && <Ionicons name="checkmark" size={11} color="#fff" />}
+                  </View>
+
+                  {/* Logo */}
+                  <View style={styles.channelLogo}>
+                    {item.icon ? (
+                      <Image source={{ uri: item.icon }} style={styles.channelLogoImg} contentFit="contain" />
+                    ) : (
+                      <Ionicons name="tv" size={28} color={isSelected ? Colors.primary : Colors.textMuted} />
+                    )}
+                  </View>
+
+                  {/* Name */}
+                  <Text style={[styles.channelName, isSelected && styles.channelNameSelected]} numberOfLines={2}>
+                    {item.baseName}
+                  </Text>
+
+                  {/* Quality badges */}
+                  {item.qualities.length > 1 && (
+                    <View style={styles.qRow}>
+                      {item.qualities.slice(0, 3).map(q => (
+                        <View key={q.label} style={[styles.qBadge, isSelected && styles.qBadgeSelected]}>
+                          <Text style={[styles.qBadgeText, isSelected && styles.qBadgeTextSelected]}>{q.label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </Pressable>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <MaterialIcons name="live-tv" size={52} color={Colors.textMuted} />
+                <Text style={styles.emptyText}>Nenhum canal encontrado</Text>
+              </View>
+            }
+          />
+        </View>
+      </View>
+
+      <Modal visible={adultPinVisible} transparent animationType="fade" onRequestClose={() => setAdultPinVisible(false)}>
+        <View style={styles.pinBackdrop}>
+          <View style={styles.pinSheet}>
+            <Ionicons name="lock-closed" size={34} color={Colors.primary} />
+            <Text style={styles.pinTitle}>Canais adultos bloqueados</Text>
+            <Text style={styles.pinText}>Digite o PIN para liberar este grupo</Text>
+            <View style={styles.pinDots}>{[0, 1, 2, 3].map(index => <View key={index} style={[styles.pinDot, adultPin.length > index && styles.pinDotFilled]} />)}</View>
+            {adultPinError ? <Text style={styles.pinError}>{adultPinError}</Text> : null}
+            <View style={styles.pinGrid}>{['1','2','3','4','5','6','7','8','9','⌫','0','OK'].map(key => (
+              <TVFocusable key={key} style={[styles.pinKey, key === 'OK' && styles.pinKeyConfirm]} onPress={() => {
+                if (key === 'OK') { void unlockAdultCategory(); return; }
+                if (key === '⌫') { setAdultPin(value => value.slice(0, -1)); setAdultPinError(''); return; }
+                if (adultPin.length < 4) { setAdultPin(value => value + key); setAdultPinError(''); }
+              }}><Text style={styles.pinKeyText}>{key}</Text></TVFocusable>
+            ))}</View>
+            <TVFocusable style={styles.pinCancel} onPress={() => setAdultPinVisible(false)}><Text style={styles.pinCancelText}>Cancelar</Text></TVFocusable>
+          </View>
+        </View>
+      </Modal>
 
       {/* BOTTOM CONFIRM BAR */}
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom + 8, 16) }]}>
@@ -424,19 +507,32 @@ const styles = StyleSheet.create({
   },
   bulkBtnText: { color: Colors.textSecondary, fontSize: FontSize.xs, fontWeight: '600' },
 
-  catBarWrap: { height: 44 },
-  catBar: { paddingHorizontal: 12, alignItems: 'center', gap: 8 },
+  setupBody: { flex: 1, flexDirection: 'row', minHeight: 0 },
+  categorySidebar: {
+    width: '27%',
+    flexShrink: 0,
+    backgroundColor: '#101010',
+    borderRightWidth: 1,
+    borderRightColor: Colors.border,
+  },
+  catBar: { padding: IS_TV ? 12 : 10, gap: IS_TV ? 8 : 8 },
+  categoryTitle: { color: Colors.textMuted, fontSize: IS_TV ? 15 : 10, fontWeight: '800', letterSpacing: 1.2, marginBottom: 2 },
   catChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
+    width: '100%',
+    minHeight: IS_TV ? 50 : 38,
+    paddingHorizontal: IS_TV ? 12 : 12,
+    paddingVertical: IS_TV ? 8 : 6,
+    justifyContent: 'center',
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.bgCardElevated,
     borderWidth: 1,
     borderColor: Colors.border,
   },
   catChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  catChipText: { color: Colors.textSecondary, fontSize: 11, fontWeight: '500' },
+  catChipText: { color: Colors.textSecondary, fontSize: IS_TV ? 15 : 11, fontWeight: '600' },
   catChipTextActive: { color: '#fff', fontWeight: '700' },
+
+  gridArea: { width: '73%', flexGrow: 0, minWidth: 0 },
 
   hintRow: {
     flexDirection: 'row',
@@ -448,7 +544,7 @@ const styles = StyleSheet.create({
   hintText: { color: Colors.textMuted, fontSize: 10 },
 
   gridContent: { paddingHorizontal: 12, paddingBottom: 16 },
-  gridRow: { gap: 10, marginBottom: 10 },
+  gridRow: { gap: 10, marginBottom: 10, justifyContent: 'space-between' },
 
   channelCard: {
     backgroundColor: Colors.bgCard,
@@ -458,7 +554,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: Colors.border,
     position: 'relative',
-    minHeight: 100,
+    minHeight: IS_TV ? 86 : 100,
     justifyContent: 'center',
   },
   channelCardSelected: {
@@ -483,8 +579,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
   },
   channelLogo: {
-    width: 48,
-    height: 48,
+    width: IS_TV ? 40 : 48,
+    height: IS_TV ? 40 : 48,
     borderRadius: 8,
     backgroundColor: Colors.bgCardElevated,
     alignItems: 'center',
@@ -492,10 +588,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 6,
   },
-  channelLogoImg: { width: 48, height: 48 },
+  channelLogoImg: { width: IS_TV ? 40 : 48, height: IS_TV ? 40 : 48 },
   channelName: {
     color: Colors.textSecondary,
-    fontSize: 10,
+    fontSize: IS_TV ? 9 : 10,
     fontWeight: '600',
     textAlign: 'center',
     lineHeight: 14,
@@ -516,6 +612,21 @@ const styles = StyleSheet.create({
   },
   qBadgeText: { color: Colors.textMuted, fontSize: 7, fontWeight: '700' },
   qBadgeTextSelected: { color: Colors.primary },
+
+  pinBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.82)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  pinSheet: { width: '100%', maxWidth: 390, backgroundColor: '#151515', borderRadius: 18, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(229,0,0,0.45)' },
+  pinTitle: { color: '#fff', fontSize: 20, fontWeight: '800', marginTop: 10 },
+  pinText: { color: Colors.textSecondary, fontSize: 14, marginTop: 6, textAlign: 'center' },
+  pinDots: { flexDirection: 'row', gap: 14, marginVertical: 18 },
+  pinDot: { width: 16, height: 16, borderRadius: 8, borderWidth: 2, borderColor: 'rgba(255,255,255,0.35)' },
+  pinDotFilled: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  pinError: { color: Colors.error, marginBottom: 10 },
+  pinGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
+  pinKey: { width: 82, height: 50, borderRadius: 10, backgroundColor: Colors.bgCardElevated, alignItems: 'center', justifyContent: 'center' },
+  pinKeyConfirm: { backgroundColor: Colors.primary },
+  pinKeyText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  pinCancel: { marginTop: 16, paddingVertical: 10, paddingHorizontal: 24 },
+  pinCancelText: { color: Colors.textSecondary, fontSize: 15, fontWeight: '700' },
 
   emptyState: { alignItems: 'center', paddingTop: 60, paddingBottom: 20 },
   emptyText: { color: Colors.textMuted, fontSize: FontSize.sm, marginTop: 12 },

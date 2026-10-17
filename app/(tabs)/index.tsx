@@ -2,7 +2,7 @@
  * Live TV Screen — channels grouped by broadcaster (Globo, SBT, Band, etc.)
  * with section headers + fast loading via parallel fetch.
  */
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -25,11 +25,13 @@ import { Colors, Spacing, BorderRadius } from '@/constants/theme';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { GroupedChannel } from '@/services/channelGrouper';
 import { getDeviceProfile } from '@/services/deviceService';
-import { verifyParentalPin, setParentalPin, setAdultBlocked } from '@/services/channelFilterService';
+import { verifyParentalPin, setParentalPin, setAdultBlocked, isAdultCategory } from '@/services/channelFilterService';
 import { resetSetup } from '@/services/channelSetupService';
 import { IS_TV, TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import { NumberedChannel } from '@/services/channelNumberService';
+import { getShortEpg, EpgProgram } from '@/services/xtreamApi';
+import { useAuth } from '@/hooks/useAuth';
 
 const device = getDeviceProfile();
 const { width } = Dimensions.get('window');
@@ -87,6 +89,7 @@ function buildSections(channels: NumberedChannel[]): Section[] {
 export default function LiveTVScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { auth } = useAuth();
   const {
     categories,
     groupedChannels,
@@ -99,9 +102,12 @@ export default function LiveTVScreen() {
     hideChannelByKey,
     hideCategoryById,
     refresh,
+    filterState,
   } = useLiveTV();
 
   const [showGroups, setShowGroups] = useState(true);
+  const [epgByStream, setEpgByStream] = useState<Record<number, EpgProgram[]>>({});
+  const epgRequested = useRef<Set<number>>(new Set());
   const catScrollRef = useRef<ScrollView>(null);
   // Refs for TV D-Pad focus-based scrolling
   const flatListRef = useRef<FlatList>(null);
@@ -112,6 +118,21 @@ export default function LiveTVScreen() {
     return buildSections(groupedChannels);
   }, [groupedChannels, showGroups, searchQuery, selectedCategory]);
 
+  const loadChannelEpg = useCallback((channel: NumberedChannel) => {
+    if (!auth || epgRequested.current.has(channel.primaryStreamId)) return;
+    epgRequested.current.add(channel.primaryStreamId);
+    void getShortEpg(auth, channel.primaryStreamId, 3).then(programs => {
+      setEpgByStream(previous => ({ ...previous, [channel.primaryStreamId]: programs }));
+    }).catch(() => {});
+  }, [auth]);
+
+  // Load the programs that are on screen before a channel is opened. Extra
+  // rows are loaded when they receive D-Pad focus, avoiding thousands of EPG
+  // requests for a large provider list.
+  useEffect(() => {
+    groupedChannels.slice(0, 18).forEach(loadChannelEpg);
+  }, [groupedChannels, loadChannelEpg]);
+
   // ─── Parental PIN modal ─────────────────────────────────────────
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinInput, setPinInput] = useState('');
@@ -119,6 +140,13 @@ export default function LiveTVScreen() {
   const [pinError, setPinError] = useState('');
   const [newPin, setNewPin] = useState('');
   const [newPinStep, setNewPinStep] = useState(false);
+  const [pendingAdultCategoryId, setPendingAdultCategoryId] = useState<string | null>(null);
+
+  // Each fresh visit starts with adult content protected. The group remains
+  // visible with a lock, and only a valid PIN reveals its channels.
+  useEffect(() => {
+    void setAdultBlocked(true).then(() => refresh());
+  }, []);
 
   // ─── Options modals ─────────────────────────────────────────────
   const [channelOptionsModal, setChannelOptionsModal] = useState(false);
@@ -167,6 +195,8 @@ export default function LiveTVScreen() {
       await setAdultBlocked(false);
       setPinModalVisible(false);
       refresh();
+      if (pendingAdultCategoryId) selectCategory(pendingAdultCategoryId);
+      setPendingAdultCategoryId(null);
     } else {
       setNewPinStep(true);
       setPinInput('');
@@ -204,7 +234,40 @@ export default function LiveTVScreen() {
     ...categories,
   ];
 
-  const renderChannelItem = (item: NumberedChannel, index?: number, sectionIndex?: number) => (
+  const renderCategoryButton = (cat: { category_id: string; category_name: string }) => {
+    const isActive = cat.category_id === 'all'
+      ? selectedCategory === 'all'
+      : selectedCategory === cat.category_id;
+    return (
+      <TVFocusable
+        key={cat.category_id}
+        style={[styles.chip, IS_TV && styles.chipTV, isActive && styles.chipActive]}
+        focusedStyle={{ backgroundColor: 'rgba(229,0,0,0.8)', borderColor: '#fff', borderWidth: 3 }}
+        onPress={() => {
+          if (cat.category_id !== 'all' && isAdultCategory(cat.category_name) && filterState.adultBlocked) {
+            setPendingAdultCategoryId(cat.category_id);
+            openPinModal('unblock_adult');
+            return;
+          }
+          selectCategory(cat.category_id);
+        }}
+      >
+        <Text
+          style={[styles.chipText, IS_TV && styles.chipTextTV, isActive && styles.chipTextActive]}
+          numberOfLines={IS_TV ? 2 : 1}
+        >
+          {cat.category_name}{cat.category_id !== 'all' && isAdultCategory(cat.category_name) && filterState.adultBlocked ? '  🔒' : ''}
+        </Text>
+      </TVFocusable>
+    );
+  };
+
+  const renderChannelItem = (item: NumberedChannel, index?: number, sectionIndex?: number) => {
+    const listings = epgByStream[item.primaryStreamId] || [];
+    const epgReady = Object.prototype.hasOwnProperty.call(epgByStream, item.primaryStreamId);
+    const now = Date.now() / 1000;
+    const program = listings.find(value => value.start_timestamp <= now && value.stop_timestamp >= now) || listings[0];
+    return (
     <TVFocusable
       key={`${item.categoryId}::${item.baseName}`}
       style={({ pressed }: any) => [styles.channelRow, pressed && styles.channelRowPressed]}
@@ -216,6 +279,7 @@ export default function LiveTVScreen() {
         }
       }}
       onFocus={() => {
+        loadChannelEpg(item);
         if (index !== undefined && sectionIndex !== undefined) {
           scrollToSectionItem(sectionIndex, index);
         } else if (index !== undefined) {
@@ -247,6 +311,9 @@ export default function LiveTVScreen() {
       </View>
       <View style={styles.channelInfo}>
         <Text style={styles.channelName} numberOfLines={1}>{item.baseName}</Text>
+        <Text style={styles.channelProgram} numberOfLines={1}>
+          {program ? `Agora: ${program.title || 'Programação ao vivo'}` : epgReady ? 'Programação indisponível' : 'Carregando programação…'}
+        </Text>
         <View style={styles.qualityRow}>
           {item.qualities.slice(0, 3).map(q => (
             <View key={q.label} style={styles.qualityBadge}>
@@ -257,7 +324,8 @@ export default function LiveTVScreen() {
       </View>
       <Ionicons name="play-circle" size={28} color={Colors.primary} />
     </TVFocusable>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -301,83 +369,82 @@ export default function LiveTVScreen() {
         </View>
       )}
 
-      {/* Category bar */}
-      <View style={styles.categoryBar}>
-        <ScrollView
-          ref={catScrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.categoryContent}
-        >
-          {allCats.map(cat => {
-            const isActive = cat.category_id === 'all'
-              ? selectedCategory === 'all'
-              : selectedCategory === cat.category_id;
-            return (
-              <Pressable
-                key={cat.category_id}
-                style={[styles.chip, isActive && styles.chipActive]}
-                onPress={() => selectCategory(cat.category_id)}
-              >
-                <Text style={[styles.chipText, isActive && styles.chipTextActive]} numberOfLines={1}>
-                  {cat.category_name}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      </View>
+      <View style={styles.contentArea}>
+        {/* On TV the provider groups stay in a persistent left sidebar. */}
+        {IS_TV ? (
+          <View style={styles.categorySidebar}>
+            <Text style={styles.categorySidebarTitle}>GRUPOS DE CANAIS</Text>
+            <ScrollView
+              ref={catScrollRef}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.categoryContentTV}
+            >
+              {allCats.map(renderCategoryButton)}
+            </ScrollView>
+          </View>
+        ) : (
+          <View style={styles.categoryBar}>
+            <ScrollView
+              ref={catScrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryContent}
+            >
+              {allCats.map(renderCategoryButton)}
+            </ScrollView>
+          </View>
+        )}
 
-      {/* Channel list — grouped sections or flat */}
-      {showGroups && sections.length > 0 ? (
-        <SectionList
-          ref={sectionListRef}
-          sections={sections}
-          keyExtractor={item => `${item.categoryId}::${item.baseName}`}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContent}
-          stickySectionHeadersEnabled
-          // Keeping every channel mounted makes Android TV spend time laying
-          // out thousands of focusable views on every D-pad action. A wide
-          // virtual window keeps the next items focusable without that cost.
-          removeClippedSubviews={IS_TV}
-          scrollEnabled={!IS_TV}
-          windowSize={IS_TV ? 9 : 10}
-          renderSectionHeader={({ section }) => (
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionDot} />
-              <Text style={styles.sectionTitle}>{section.title}</Text>
-              <Text style={styles.sectionCount}>{section.data.length}</Text>
-            </View>
+        {/* Channel list — grouped sections or flat */}
+        <View style={styles.channelListArea}>
+          {showGroups && sections.length > 0 ? (
+            <SectionList
+              ref={sectionListRef}
+              style={styles.channelList}
+              sections={sections}
+              keyExtractor={item => `${item.categoryId}::${item.baseName}`}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.listContent}
+              stickySectionHeadersEnabled
+              removeClippedSubviews={IS_TV}
+              scrollEnabled={!IS_TV}
+              windowSize={IS_TV ? 9 : 10}
+              renderSectionHeader={({ section }) => (
+                <View style={styles.sectionHeader}>
+                  <View style={styles.sectionDot} />
+                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                  <Text style={styles.sectionCount}>{section.data.length}</Text>
+                </View>
+              )}
+              renderItem={({ item, index, section }) => {
+                const sectionIndex = sections.findIndex(s => s.title === section.title);
+                return renderChannelItem(item, index, sectionIndex);
+              }}
+              ListEmptyComponent={<EmptyChannels />}
+              initialNumToRender={IS_TV ? 16 : 20}
+              maxToRenderPerBatch={IS_TV ? 12 : 20}
+              onScrollToIndexFailed={() => {}}
+            />
+          ) : (
+            <FlatList
+              ref={flatListRef}
+              style={styles.channelList}
+              data={groupedChannels}
+              keyExtractor={item => `${item.categoryId}::${item.baseName}`}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={IS_TV}
+              scrollEnabled={!IS_TV}
+              windowSize={IS_TV ? 9 : 10}
+              renderItem={({ item, index }) => renderChannelItem(item, index)}
+              ListEmptyComponent={<EmptyChannels />}
+              initialNumToRender={IS_TV ? 16 : 20}
+              maxToRenderPerBatch={IS_TV ? 12 : 20}
+              onScrollToIndexFailed={() => {}}
+            />
           )}
-          renderItem={({ item, index, section }) => {
-            const sectionIndex = sections.findIndex(s => s.title === section.title);
-            return renderChannelItem(item, index, sectionIndex);
-          }}
-          ListEmptyComponent={<EmptyChannels />}
-          initialNumToRender={IS_TV ? 16 : 20}
-          maxToRenderPerBatch={IS_TV ? 12 : 20}
-          onScrollToIndexFailed={() => {}}
-        />
-      ) : (
-        <FlatList
-          ref={flatListRef}
-          data={groupedChannels}
-          keyExtractor={item => `${item.categoryId}::${item.baseName}`}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          // Keep a generous focus window instead of mounting the complete
-          // catalog of channels on Android TV.
-          removeClippedSubviews={IS_TV}
-          scrollEnabled={!IS_TV}
-          windowSize={IS_TV ? 9 : 10}
-          renderItem={({ item, index }) => renderChannelItem(item, index)}
-          ListEmptyComponent={<EmptyChannels />}
-          initialNumToRender={IS_TV ? 16 : 20}
-          maxToRenderPerBatch={IS_TV ? 12 : 20}
-          onScrollToIndexFailed={() => {}}
-        />
-      )}
+        </View>
+      </View>
 
       {/* Channel Options Modal */}
       <Modal visible={channelOptionsModal} transparent animationType="fade" onRequestClose={() => setChannelOptionsModal(false)}>
@@ -480,8 +547,8 @@ function EmptyChannels() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg },
-  centered: { flex: 1, backgroundColor: Colors.bg, alignItems: 'center', justifyContent: 'center' },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  centered: { flex: 1, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -507,7 +574,7 @@ const styles = StyleSheet.create({
   countText: { color: Colors.textMuted, fontSize: 11 },
   groupToggle: {
     width: 32, height: 32, borderRadius: 8,
-    backgroundColor: Colors.bgCardElevated,
+    backgroundColor: 'rgba(8,8,8,0.30)',
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: Colors.border,
   },
@@ -517,7 +584,7 @@ const styles = StyleSheet.create({
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.bgInput,
+    backgroundColor: 'rgba(5,5,5,0.34)',
     marginHorizontal: 14,
     marginVertical: 8,
     borderRadius: 10,
@@ -528,25 +595,50 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   searchInput: { flex: 1, color: Colors.textPrimary, fontSize: 13 },
+  contentArea: { flex: 1, minHeight: 0, flexDirection: IS_TV ? 'row' : 'column' },
   categoryBar: { height: 44 },
   categoryContent: { paddingHorizontal: 14, alignItems: 'center', gap: 6 },
+  categorySidebar: {
+    width: 290,
+    backgroundColor: 'transparent',
+    paddingTop: 14,
+  },
+  categorySidebarTitle: {
+    color: Colors.textMuted,
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    paddingHorizontal: 18,
+    paddingBottom: 12,
+  },
+  categoryContentTV: { paddingHorizontal: 14, paddingBottom: 24, gap: 10 },
   chip: {
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
-    backgroundColor: Colors.bgCardElevated, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: 'transparent', borderWidth: 0,
+  },
+  chipTV: {
+    width: '100%',
+    minHeight: 58,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    justifyContent: 'center',
   },
   chipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   chipText: { color: Colors.textSecondary, fontSize: 11, fontWeight: '500' },
+  chipTextTV: { fontSize: 17, fontWeight: '600' },
   chipTextActive: { color: '#fff', fontWeight: '700' },
+  channelListArea: { flex: 1, minWidth: 0, minHeight: 0 },
+  channelList: { flex: 1 },
   listContent: { paddingHorizontal: 10, paddingBottom: 20, paddingTop: 4 },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0d0d0d',
+    backgroundColor: 'transparent',
     paddingHorizontal: 14,
     paddingVertical: 8,
     gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(229,0,0,0.12)',
+    borderBottomWidth: 0,
   },
   sectionDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.primary },
   sectionTitle: { color: '#fff', fontSize: 13, fontWeight: '700', flex: 1 },
@@ -562,12 +654,11 @@ const styles = StyleSheet.create({
   channelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.bgCard,
+    backgroundColor: 'transparent',
     borderRadius: 10,
     marginBottom: 6,
     padding: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    borderWidth: 0,
     gap: 10,
   },
   channelRowPressed: { opacity: 0.75 },
@@ -580,13 +671,14 @@ const styles = StyleSheet.create({
   channelNumberText: { color: Colors.primary, fontSize: 11, fontWeight: '800' },
   channelIcon: {
     width: 46, height: 46, borderRadius: 8,
-    backgroundColor: Colors.bgCardElevated,
+    backgroundColor: 'rgba(255,255,255,0.12)',
     alignItems: 'center', justifyContent: 'center',
     overflow: 'hidden',
   },
   channelImg: { width: 46, height: 46 },
   channelInfo: { flex: 1 },
-  channelName: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  channelName: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600', marginBottom: 2 },
+  channelProgram: { color: '#9edfff', fontSize: 10, fontWeight: '600', marginBottom: 4 },
   qualityRow: { flexDirection: 'row', gap: 4 },
   qualityBadge: {
     backgroundColor: 'rgba(229,0,0,0.15)', borderRadius: 3,

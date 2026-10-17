@@ -97,7 +97,9 @@ export async function isWatched(id: string, type: string): Promise<boolean> {
 
 export async function clearHistory(): Promise<void> {
   try {
-    await AsyncStorage.removeItem(HISTORY_KEY);
+    // A clean history must also clear saved resume points and episode-complete
+    // markers. Otherwise a title can look watched again right after removal.
+    await AsyncStorage.multiRemove([HISTORY_KEY, PROGRESS_KEY, COMPLETED_KEY]);
   } catch {}
 }
 

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSeries } from '@/hooks/useSeries';
 import { SeriesInfo, Episode } from '@/services/xtreamApi';
@@ -42,6 +43,12 @@ export default function SeriesDetailScreen() {
     loadProgress();
     return () => { isUnmounted.current = true; };
   }, [seriesId]);
+
+  // The details screen stays mounted behind the webOS player. Refresh when
+  // it regains focus so completed episodes and the resume bar appear at once.
+  useFocusEffect(useCallback(() => {
+    void loadProgress();
+  }, [seriesId]));
 
   // Android back button
   useEffect(() => {
@@ -77,6 +84,18 @@ export default function SeriesDetailScreen() {
   function handlePlayEpisode(episode: Episode, resumePosition?: number) {
     const ext = episode.container_extension || 'mp4';
     const url = getEpisodeUrl(episode.id, ext, episode.direct_source);
+    // Send the following episodes with the player. This lets webOS advance
+    // without returning to the detail page between every episode.
+    const orderedEpisodes = seriesInfo
+      ? Object.keys(seriesInfo.episodes).sort().flatMap(season => seriesInfo.episodes[season] || [])
+      : [];
+    const currentIndex = orderedEpisodes.findIndex(item => item.id === episode.id);
+    const nextEpisodes = orderedEpisodes.slice(currentIndex + 1).map(item => ({
+      id: item.id,
+      url: getEpisodeUrl(item.id, item.container_extension || 'mp4', item.direct_source),
+      title: `${name} - T${item.season}:E${item.episode_num} ${item.title}`,
+      poster: item.info?.movie_image || cover,
+    }));
     router.push({
       pathname: '/player',
       params: {
@@ -88,6 +107,7 @@ export default function SeriesDetailScreen() {
         seriesId,
         seriesName: name,
         resumePosition: resumePosition ? String(Math.floor(resumePosition)) : undefined,
+        nextEpisodesJson: nextEpisodes.length ? JSON.stringify(nextEpisodes) : undefined,
       },
     });
   }
@@ -445,7 +465,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
     backgroundColor: Colors.bgCardElevated,
     borderWidth: 1, borderColor: Colors.border,
-    minWidth: IS_TV ? 72 : 56, alignItems: 'center', justifyContent: 'center',
+    minWidth: IS_TV ? 72 : 56, justifyContent: 'center',
   },
   seasonChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
   seasonText: { color: Colors.textSecondary, fontSize: IS_TV ? 14 : FontSize.sm, fontWeight: '600' },

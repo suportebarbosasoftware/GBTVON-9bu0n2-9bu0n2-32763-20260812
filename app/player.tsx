@@ -36,6 +36,8 @@ import {
   epgTimeLabel,
 } from '@/services/xtreamApi';
 import { saveProgress, addToHistory, getProgress } from '@/services/favoritesService';
+import { updateCurrentContent } from '@/services/adminApiService';
+import { getDeviceId } from '@/services/deviceIdService';
 import { IS_TV } from '@/hooks/useTV';
 import TVFocusable from '@/components/ui/TVFocusable';
 import { Colors } from '@/constants/theme';
@@ -81,8 +83,14 @@ export default function PlayerScreen() {
 
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { auth } = useAuth();
+  const { auth, macAddress } = useAuth();
   const isLive = type === 'live';
+
+  // The administrative "Watching" feature is deliberately isolated from
+  // playback. Reporting failures must never affect video, focus or D-pad
+  // navigation on Android TV.
+  const reportMacAddressRef = useRef<string | null>(null);
+  const contentReportTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Player ──────────────────────────────────────────────────────────────
   const player = useVideoPlayer(url || '', p => {
@@ -431,6 +439,9 @@ export default function PlayerScreen() {
   const [browserChannelIndex, setBrowserChannelIndex] = useState(0);
   const [activeQualityStreamId, setActiveQualityStreamId] = useState<number | null>(null);
   const [qualityPanelVisible, setQualityPanelVisible] = useState(false);
+  // The live guide is a passive bottom banner. It deliberately has no
+  // focusable controls, so the D-pad keeps controlling playback as usual.
+  const [epgGuideVisible, setEpgGuideVisible] = useState(false);
   // Incrementing this recreates exactly one native video surface after a live
   // stream is released. It is intentionally not navigation state.
   const [liveSurfaceVersion, setLiveSurfaceVersion] = useState(0);
@@ -442,11 +453,14 @@ export default function PlayerScreen() {
   const channelChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveSurfaceReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qualityPanelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const epgGuideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qualityPanelVisibleRef = useRef(false);
+  const epgGuideVisibleRef = useRef(false);
   const channelChangeGenerationRef = useRef(0);
   const changeChannelRef = useRef<(idx: number) => void>(() => {});
   const changeQualityRef = useRef<(direction: -1 | 1) => void>(() => {});
   const showQualityPanelRef = useRef<() => void>(() => {});
+  const showEpgGuideRef = useRef<() => void>(() => {});
   const openChannelBrowserRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -565,6 +579,7 @@ export default function PlayerScreen() {
   function changeChannel(idx: number) {
     if (!auth || !allChannels[idx]) return;
     const channel = allChannels[idx];
+    hideEpgGuide();
     setCurrentChannelIndex(idx);
     currentChannelIndexRef.current = idx;
     browserChannelIndexRef.current = idx;
@@ -581,6 +596,7 @@ export default function PlayerScreen() {
 
   function openChannelBrowser() {
     hideQualityPanel();
+    hideEpgGuide();
     selectBrowserChannel(currentChannelIndexRef.current);
     channelBrowserVisibleRef.current = true;
     setChannelBrowserVisible(true);
@@ -595,6 +611,7 @@ export default function PlayerScreen() {
   function showQualityPanel() {
     const channel = allChannels[currentChannelIndexRef.current];
     if (!channel || channel.qualities.length < 2) return;
+    hideEpgGuide();
     if (qualityPanelTimerRef.current) clearTimeout(qualityPanelTimerRef.current);
     qualityPanelVisibleRef.current = true;
     setQualityPanelVisible(true);
@@ -605,6 +622,23 @@ export default function PlayerScreen() {
     if (qualityPanelTimerRef.current) clearTimeout(qualityPanelTimerRef.current);
     qualityPanelVisibleRef.current = false;
     setQualityPanelVisible(false);
+  }
+
+  function showEpgGuide() {
+    if (!isLive) return;
+    hideQualityPanel();
+    if (epgGuideTimerRef.current) clearTimeout(epgGuideTimerRef.current);
+    epgGuideVisibleRef.current = true;
+    setEpgGuideVisible(true);
+    // Same simple behavior as a TV guide banner: it disappears by itself
+    // without stealing playback focus or forcing the user to press Back.
+    epgGuideTimerRef.current = setTimeout(() => hideEpgGuide(), 6500);
+  }
+
+  function hideEpgGuide() {
+    if (epgGuideTimerRef.current) clearTimeout(epgGuideTimerRef.current);
+    epgGuideVisibleRef.current = false;
+    setEpgGuideVisible(false);
   }
 
   function selectQuality(streamId: number) {
@@ -631,12 +665,14 @@ export default function PlayerScreen() {
     openChannelBrowserRef.current = openChannelBrowser;
     changeQualityRef.current = changeQuality;
     showQualityPanelRef.current = showQualityPanel;
+    showEpgGuideRef.current = showEpgGuide;
   });
 
   useEffect(() => () => {
     if (channelChangeTimerRef.current) clearTimeout(channelChangeTimerRef.current);
     if (liveSurfaceReleaseTimerRef.current) clearTimeout(liveSurfaceReleaseTimerRef.current);
     if (qualityPanelTimerRef.current) clearTimeout(qualityPanelTimerRef.current);
+    if (epgGuideTimerRef.current) clearTimeout(epgGuideTimerRef.current);
   }, []);
 
   // The quick channel list must open around the channel already playing,
@@ -679,24 +715,37 @@ export default function PlayerScreen() {
   // ── EPG for current channel ────────────────────────────────────────────
   const [epgPrograms, setEpgPrograms] = useState<EpgProgram[]>([]);
   const epgRequestIdRef = useRef(0);
+  const epgStreamIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isLive || !auth || !allChannels[currentChannelIndex]) return;
     const stream = allChannels[currentChannelIndex];
     const requestId = ++epgRequestIdRef.current;
+    // Never display the previous channel's schedule while the next request
+    // is in flight. Reopening the guide on the same channel preserves the
+    // already loaded schedule and therefore feels instantaneous.
+    if (epgStreamIdRef.current !== stream.streamId) {
+      epgStreamIdRef.current = stream.streamId;
+      setEpgPrograms([]);
+    }
     // EPG is auxiliary information. Delay it slightly so it never competes
     // with the stream request while the user is rapidly changing channels.
+    // If the guide is explicitly requested, fetch immediately instead.
     const timer = setTimeout(() => {
       getShortEpg(auth, stream.streamId, 3).then(progs => {
         if (epgRequestIdRef.current === requestId) setEpgPrograms(progs);
       });
-    }, 350);
+    }, epgGuideVisible ? 0 : 350);
     return () => clearTimeout(timer);
-  }, [currentChannelIndex, isLive, auth, allChannels]);
+  }, [currentChannelIndex, isLive, auth, allChannels, epgGuideVisible]);
 
   // ── Back button ────────────────────────────────────────────────────────
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (epgGuideVisibleRef.current) {
+        hideEpgGuide();
+        return true;
+      }
       if (channelBrowserVisibleRef.current) {
         closeChannelBrowser();
         return true;
@@ -734,11 +783,12 @@ export default function PlayerScreen() {
         return;
       }
 
-      // Live TV uses Left/Right for quality selection. The first press opens
-      // the right-side panel; subsequent presses choose a lower/higher stream.
+      // On live TV, Left opens the programme guide banner. Quality keeps the
+      // established right-side panel; while that panel is open, Left/Right
+      // continue to select lower/higher variants as before.
       if (keyCode === 21 && isLive) {
         if (qualityPanelVisibleRef.current) changeQualityRef.current(-1);
-        else showQualityPanelRef.current();
+        else showEpgGuideRef.current();
         return;
       }
 
@@ -783,7 +833,15 @@ export default function PlayerScreen() {
 
   // ── Current EPG program ────────────────────────────────────────────────
   const now = Date.now() / 1000;
-  const currentEpg = epgPrograms.find(p => p.start_timestamp <= now && p.stop_timestamp >= now);
+  const currentEpgIndex = epgPrograms.findIndex(p => p.start_timestamp <= now && p.stop_timestamp >= now);
+  const currentEpg = currentEpgIndex >= 0 ? epgPrograms[currentEpgIndex] : undefined;
+  const nextEpg = currentEpgIndex >= 0
+    ? epgPrograms.slice(currentEpgIndex + 1).find(p => p.start_timestamp >= currentEpg!.stop_timestamp)
+    : epgPrograms.find(p => p.start_timestamp > now);
+  const epgProgress = currentEpg
+    ? Math.max(0, Math.min(1, (now - currentEpg.start_timestamp) /
+      Math.max(1, currentEpg.stop_timestamp - currentEpg.start_timestamp)))
+    : 0;
 
   // ── Current channel name ───────────────────────────────────────────────
   const currentChannel = allChannels[currentChannelIndex];
@@ -792,6 +850,50 @@ export default function PlayerScreen() {
     : (title ?? 'Reproduzindo');
 
   const progressPct = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+
+  // Keep the representative/admin "Watching" tab aligned with the exact
+  // item being played. Including the active stream in the dependencies is
+  // essential: channel changes happen without leaving this screen.
+  useEffect(() => {
+    const contentType = isLive ? 'live' : type === 'episode' ? 'series' : 'movie';
+    const contentTitle = displayTitle || 'Reproduzindo';
+    let cancelled = false;
+
+    const sendCurrentContent = (mac: string) => {
+      // Fire-and-forget by design. A temporary network issue cannot delay
+      // playback or make the remote control feel heavy.
+      void updateCurrentContent(mac, contentTitle, contentType);
+    };
+
+    const startReporting = async () => {
+      const mac = macAddress || await getDeviceId();
+      if (cancelled || !mac) return;
+
+      reportMacAddressRef.current = mac;
+      sendCurrentContent(mac);
+      contentReportTimerRef.current = setInterval(() => sendCurrentContent(mac), 2 * 60 * 1000);
+    };
+
+    void startReporting();
+
+    return () => {
+      cancelled = true;
+      if (contentReportTimerRef.current) {
+        clearInterval(contentReportTimerRef.current);
+        contentReportTimerRef.current = null;
+      }
+    };
+  }, [macAddress, isLive, type, displayTitle, currentChannel?.streamId]);
+
+  // Clear the presence only when the player is truly closed. Do not clear it
+  // between live channel changes, otherwise the admin panel can briefly show
+  // the client as not watching while the next channel starts.
+  useEffect(() => () => {
+    if (contentReportTimerRef.current) clearInterval(contentReportTimerRef.current);
+    if (reportMacAddressRef.current) {
+      void updateCurrentContent(reportMacAddressRef.current, null, null);
+    }
+  }, []);
 
   return (
     <View style={styles.root}>
@@ -987,6 +1089,48 @@ export default function PlayerScreen() {
               );
             })}
           </View>
+        </View>
+      )}
+
+      {/* Live guide banner. It is display-only so it cannot capture Android
+          TV focus or interfere with channel navigation. */}
+      {isLive && !channelBrowserVisible && epgGuideVisible && currentChannel && (
+        <View style={[styles.epgGuideBanner, { bottom: Math.max(insets.bottom, IS_TV ? 38 : 20) }]} pointerEvents="none">
+          {currentEpg ? (
+            <>
+              <View style={styles.epgGuideCurrentRow}>
+                <Text style={styles.epgGuideTime}>{epgTimeLabel(currentEpg.start_timestamp)}</Text>
+                <View style={styles.epgGuideLiveBadge}>
+                  <View style={styles.epgGuideLiveDot} />
+                  <Text style={styles.epgGuideLiveText}>AO VIVO</Text>
+                </View>
+                <Text style={styles.epgGuideCurrentTitle} numberOfLines={1}>
+                  {currentEpg.title || 'Programação ao vivo'}
+                </Text>
+              </View>
+              <View style={styles.epgProgressTrack}>
+                <View style={[styles.epgProgressFill, { width: `${epgProgress * 100}%` }]} />
+              </View>
+              <View style={styles.epgGuideNextRow}>
+                <Text style={styles.epgGuideNextLabel}>A seguir:</Text>
+                {nextEpg ? (
+                  <>
+                    <Text style={styles.epgGuideNextTime}>{epgTimeLabel(nextEpg.start_timestamp)}</Text>
+                    <Text style={styles.epgGuideNextTitle} numberOfLines={1}>
+                      {nextEpg.title || 'Próxima programação'}
+                    </Text>
+                  </>
+                ) : (
+                  <Text style={styles.epgGuideNextPending}>Programação não informada</Text>
+                )}
+              </View>
+            </>
+          ) : (
+            <View style={styles.epgGuideUnavailable}>
+              <Ionicons name="calendar-outline" size={IS_TV ? 25 : 19} color="#75D3FF" />
+              <Text style={styles.epgGuideUnavailableText}>Programação indisponível para este canal</Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -1326,6 +1470,115 @@ const styles = StyleSheet.create({
   },
   qualityOptionTextActive: {
     color: '#fff',
+  },
+  // Bottom live EPG banner (SKY-style information overlay)
+  epgGuideBanner: {
+    position: 'absolute',
+    zIndex: 30,
+    alignSelf: 'center',
+    width: IS_TV ? '72%' : '90%',
+    maxWidth: 980,
+    borderRadius: IS_TV ? 16 : 12,
+    paddingHorizontal: IS_TV ? 26 : 16,
+    paddingTop: IS_TV ? 16 : 11,
+    paddingBottom: IS_TV ? 15 : 10,
+    backgroundColor: 'rgba(7, 14, 23, 0.94)',
+    borderWidth: 1,
+    borderColor: 'rgba(130, 213, 255, 0.32)',
+    shadowColor: '#000',
+    shadowOpacity: 0.55,
+    shadowRadius: 15,
+    elevation: 18,
+  },
+  epgGuideCurrentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: IS_TV ? 13 : 8,
+  },
+  epgGuideTime: {
+    color: '#fff',
+    fontSize: IS_TV ? 25 : 17,
+    fontWeight: '500',
+    fontVariant: ['tabular-nums'],
+  },
+  epgGuideLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: 7,
+    paddingHorizontal: IS_TV ? 9 : 6,
+    paddingVertical: IS_TV ? 5 : 3,
+    backgroundColor: 'rgba(216, 56, 56, 0.28)',
+  },
+  epgGuideLiveDot: {
+    width: IS_TV ? 9 : 7,
+    height: IS_TV ? 9 : 7,
+    borderRadius: 5,
+    backgroundColor: '#FF4C4C',
+  },
+  epgGuideLiveText: {
+    color: '#FFF',
+    fontSize: IS_TV ? 15 : 10,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+  },
+  epgProgressTrack: {
+    height: IS_TV ? 7 : 5,
+    marginTop: IS_TV ? 14 : 9,
+    borderRadius: 5,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.24)',
+  },
+  epgProgressFill: {
+    height: '100%',
+    borderRadius: 5,
+    backgroundColor: '#52C8FF',
+  },
+  epgGuideNextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: IS_TV ? 10 : 7,
+    marginTop: IS_TV ? 12 : 8,
+  },
+  epgGuideNextLabel: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: IS_TV ? 18 : 13,
+    fontWeight: '500',
+  },
+  epgGuideNextTime: {
+    color: '#fff',
+    fontSize: IS_TV ? 18 : 13,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  epgGuideCurrentTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: IS_TV ? 25 : 17,
+    fontWeight: '700',
+  },
+  epgGuideNextTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: IS_TV ? 18 : 13,
+    fontWeight: '700',
+  },
+  epgGuideNextPending: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: IS_TV ? 18 : 13,
+  },
+  epgGuideUnavailable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    minHeight: IS_TV ? 68 : 50,
+  },
+  epgGuideUnavailableText: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: IS_TV ? 18 : 13,
+    fontWeight: '600',
   },
   // Channel browser
   channelBrowser: {

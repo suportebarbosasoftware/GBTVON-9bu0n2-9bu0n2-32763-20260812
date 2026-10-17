@@ -3,7 +3,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider } from '@/contexts/AuthContext';
-import { DevModeProvider } from '@/contexts/DevModeContext';
+import WebOSRemoteNavigation from '@/components/ui/WebOSRemoteNavigation';
+import TermsAcceptanceGate from '@/components/ui/TermsAcceptanceGate';
 
 // Orientation is locked to landscape via app.json "orientation": "landscape"
 // expo-screen-orientation is NOT used — crashes on Android TV
@@ -12,9 +13,10 @@ export default function RootLayout() {
   return (
     <AlertProvider>
       <SafeAreaProvider>
-        <DevModeProvider>
         <AuthProvider>
           <StatusBar style="light" hidden />
+          <WebOSRemoteNavigation />
+          <TermsAcceptanceGate />
           <Stack
             screenOptions={{
               headerShown: false,
@@ -42,20 +44,6 @@ export default function RootLayout() {
               }}
             />
             <Stack.Screen
-              name="admin"
-              options={{
-                headerShown: false,
-                animation: 'slide_from_bottom',
-              }}
-            />
-            <Stack.Screen
-              name="rep-panel"
-              options={{
-                headerShown: false,
-                animation: 'slide_from_bottom',
-              }}
-            />
-            <Stack.Screen
               name="blocked"
               options={{
                 headerShown: false,
@@ -64,7 +52,6 @@ export default function RootLayout() {
             />
           </Stack>
         </AuthProvider>
-        </DevModeProvider>
       </SafeAreaProvider>
     </AlertProvider>
   );

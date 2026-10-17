@@ -141,6 +141,9 @@ export async function getDeviceId(): Promise<string> {
 
 /** Get device display name — safe for all platforms */
 export function getDeviceName(): string {
+  if (Platform.OS === 'web' && typeof navigator !== 'undefined') {
+    return /web0s|webos/i.test(navigator.userAgent) ? 'LG webOS TV' : 'Navegador Web';
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Device = require('expo-device');
@@ -154,6 +157,9 @@ export function getDeviceName(): string {
 
 /** Get platform string */
 export function getDevicePlatform(): string {
+  if (Platform.OS === 'web' && typeof navigator !== 'undefined' && /web0s|webos/i.test(navigator.userAgent)) {
+    return 'webos';
+  }
   const isTV = (Platform as any).isTV === true;
   if (isTV) return 'androidtv';
   return Platform.OS;

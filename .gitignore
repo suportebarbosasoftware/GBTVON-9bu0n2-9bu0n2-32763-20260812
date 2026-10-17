@@ -7,6 +7,9 @@ node_modules/
 .expo/
 dist/
 web-build/
+webos/dist/
+webos/.tmp/
+webos/packages/
 expo-env.d.ts
 
 # Native
@@ -30,8 +33,10 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# Local configuration and credentials (keep only on the developer machine)
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
@@ -45,5 +50,12 @@ yarn-error.*
 /android/*.png
 /android/*.xml
 /android/local-ndk.init.gradle
+
+# Temporary copies and generated web deployment packages
+/tmp/
+/output/
+/web-site/
+/web-site-deploy/
+/webos/.chrome-icon-profile/
 
 app-example

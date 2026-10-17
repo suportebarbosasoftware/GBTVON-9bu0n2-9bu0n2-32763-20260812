@@ -28,7 +28,10 @@ function getDeviceType(): DeviceType {
   const nativeTVBox = Platform.OS === 'android' &&
     (NativeModules as any).TVDeviceInfo?.isTelevision === true;
 
-  if (platformIsTV || nativeTVBox) {
+  const isWebOSTV = Platform.OS === 'web' && typeof navigator !== 'undefined' &&
+    /web0s|webos|smarttv|netcast/i.test(navigator.userAgent);
+
+  if (platformIsTV || nativeTVBox || isWebOSTV) {
     const { width } = Dimensions.get('window');
     return width >= 1280 ? 'androidtv' : 'tvbox';
   }

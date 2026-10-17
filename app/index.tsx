@@ -6,7 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { isSetupDone } from '@/services/channelSetupService';
 
 export default function SplashScreen() {
-  const { isAuthenticated, isLoading, activationStatus } = useAuth();
+  const { isAuthenticated, isDemoMode, isLoading, activationStatus } = useAuth();
   const [introFinished, setIntroFinished] = useState(false);
   const introPlayer = useVideoPlayer(require('@/assets/images/intro.mp4'), player => {
     player.loop = false;
@@ -53,6 +53,8 @@ export default function SplashScreen() {
     }
     return <Redirect href="/login" />;
   }
+
+  if (isDemoMode) return <Redirect href="/(tabs)" />;
 
   return <SetupChecker />;
 }

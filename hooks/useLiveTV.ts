@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getLiveCategories, getLiveStreams, getLiveStreamUrl, LiveCategory, LiveStream } from '@/services/xtreamApi';
 import { groupChannels, GroupedChannel } from '@/services/channelGrouper';
 import { useAuth } from '@/hooks/useAuth';
@@ -22,6 +22,7 @@ import {
   applyChannelNumbers,
   NumberedChannel,
 } from '@/services/channelNumberService';
+import { DEMO_LIVE_CATEGORIES, DEMO_LIVE_STREAMS, getDemoLiveUrl } from '@/services/demoCatalog';
 
 interface LiveCatalogCache {
   accountKey: string;
@@ -36,7 +37,7 @@ function getAccountKey(auth: NonNullable<ReturnType<typeof useAuth>['auth']>): s
 }
 
 export function useLiveTV() {
-  const { auth } = useAuth();
+  const { auth, isDemoMode } = useAuth();
   const [categories, setCategories] = useState<LiveCategory[]>([]);
   const [allStreams, setAllStreams] = useState<LiveStream[]>([]);
   const [groupedChannels, setGroupedChannels] = useState<NumberedChannel[]>([]);
@@ -54,8 +55,23 @@ export function useLiveTV() {
   const [allGrouped, setAllGrouped] = useState<GroupedChannel[]>([]);
 
   useEffect(() => {
+    if (isDemoMode) {
+      const grouped = groupChannels(DEMO_LIVE_STREAMS);
+      const numbers = new Map<string, number>();
+      grouped.forEach((channel, index) => numbers.set(makeChannelKey(channel.baseName, channel.categoryId), index + 1));
+      setCategories(DEMO_LIVE_CATEGORIES);
+      setAllStreams(DEMO_LIVE_STREAMS);
+      setAllGrouped(grouped);
+      setChannelNumberMap(numbers);
+      setFilterState({ hiddenChannels: [], hiddenCategories: [], adultBlocked: true });
+      setSelectedChannelKeys(new Set());
+      setSetupDone(false);
+      setLoading(false);
+      return;
+    }
     if (auth) loadData();
-  }, [auth]);
+    else setLoading(false);
+  }, [auth, isDemoMode]);
 
   async function loadData(forceRefresh = false) {
     if (!auth) return;
@@ -105,7 +121,10 @@ export function useLiveTV() {
       let visible = grouped.filter(g => {
         const key = makeChannelKey(g.baseName, g.categoryId);
         if (filters.hiddenChannels.includes(key)) return false;
-        // Adult channels visible by default — client can hide manually
+        if (filters.adultBlocked) {
+          const category = cats.find(item => item.category_id === g.categoryId);
+          if (category && isAdultCategory(category.category_name)) return false;
+        }
         return true;
       });
 
@@ -166,13 +185,14 @@ export function useLiveTV() {
   }
 
   function getStreamUrl(streamId: number): string {
+    if (isDemoMode) return getDemoLiveUrl(streamId);
     if (!auth) return '';
     return getLiveStreamUrl(auth, streamId);
   }
 
-  function getAllNumberedChannels(): NumberedChannel[] {
+  const getAllNumberedChannels = useCallback((): NumberedChannel[] => {
     return applyChannelNumbers(allGrouped, channelNumberMap).sort((a, b) => a.channelNumber - b.channelNumber);
-  }
+  }, [allGrouped, channelNumberMap]);
 
   async function hideChannelByKey(baseName: string, categoryId: string) {
     const key = makeChannelKey(baseName, categoryId);
