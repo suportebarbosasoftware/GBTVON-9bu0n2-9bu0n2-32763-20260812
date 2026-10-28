@@ -19,14 +19,20 @@ export function isAdminAuthError(error: unknown): boolean {
 
 async function invokeOnce(body: Record<string, unknown>): Promise<any> {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const controller = new AbortController();
+  // Pass an options variable for compatibility with older client type declarations.
+  const options = { body, signal: controller.signal };
   try {
     const result = await Promise.race([
-      getSupabaseClient().functions.invoke('admin-api', { body }),
+      getSupabaseClient().functions.invoke('admin-api', options),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new AdminApiError(
-          'O servidor demorou para responder. Os dados anteriores foram mantidos; tente atualizar novamente.',
-          0, 'request_timeout',
-        )), 18000);
+        timer = setTimeout(() => {
+          reject(new AdminApiError(
+            'O servidor demorou para responder. Os dados anteriores foram mantidos; tente atualizar novamente.',
+            0, 'request_timeout',
+          ));
+          controller.abort();
+        }, 18000);
       }),
     ]);
     const { data, error } = result;

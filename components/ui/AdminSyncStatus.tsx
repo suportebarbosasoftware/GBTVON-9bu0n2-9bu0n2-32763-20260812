@@ -7,15 +7,28 @@ interface AdminSyncStatusProps {
   loading: boolean;
   error: string;
   onRetry: () => void;
+  metadataLoading?: boolean;
+  lastSyncedAt?: string | null;
 }
-export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, onRetry }: AdminSyncStatusProps) {
-  if (!loading && !error) return null;
+export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, onRetry, metadataLoading = false, lastSyncedAt = null }: AdminSyncStatusProps) {
+  if (!loading && !error && !metadataLoading && !lastSyncedAt) return null;
+  const hasMessage = loading || !!error || metadataLoading;
+  const updatedDate = lastSyncedAt ? new Date(lastSyncedAt) : null;
+  const updatedTime = updatedDate && Number.isFinite(updatedDate.getTime()) ? updatedDate.toLocaleTimeString('pt-BR') : null;
   return (
     <View style={styles.panel} accessibilityLiveRegion="polite">
-      <View style={styles.messageRow}>
-        {error ? <Ionicons name="alert-circle-outline" size={20} color={Colors.warning} /> : <ActivityIndicator size="small" color={Colors.primary} />}
-        <Text style={styles.message}>{error || 'Atualizando o painel. As listas aparecem assim que cada consulta termina.'}</Text>
-      </View>
+      {hasMessage ? (
+        <View style={styles.messageRow}>
+          {error ? <Ionicons name="alert-circle-outline" size={20} color={Colors.warning} /> : <ActivityIndicator size="small" color={Colors.primary} />}
+          <Text style={styles.message}>{error || (loading ? 'Sincronizando MACs e clientes...' : 'Carregando informações desta aba. A atualização dos MACs continua independente.')}</Text>
+        </View>
+      ) : null}
+      {updatedTime ? (
+        <View style={styles.updatedRow}>
+          <Ionicons name={error ? 'time-outline' : 'checkmark-circle-outline'} size={18} color={error ? Colors.warning : Colors.success} />
+          <Text style={styles.updatedText}>Última sincronização dos MACs: {updatedTime}</Text>
+        </View>
+      ) : null}
       {error ? (
         <Pressable
           accessibilityRole="button" accessibilityLabel="Tentar atualizar o painel novamente"
@@ -35,5 +48,7 @@ const styles = StyleSheet.create({
   message: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 26, includeFontPadding: false },
   retry: { minHeight: 48, paddingHorizontal: Spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: Colors.primaryDark, borderRadius: BorderRadius.md },
   retryText: { color: Colors.textPrimary, fontSize: FontSize.md, fontWeight: '600', includeFontPadding: false },
+  updatedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  updatedText: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 26, includeFontPadding: false },
   dimmed: { opacity: 0.65 },
 });

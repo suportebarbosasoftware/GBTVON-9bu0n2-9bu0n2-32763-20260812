@@ -113,6 +113,23 @@ export async function rootAdminLogin(password: string): Promise<void> {
   setRootAdminSession(result.rootSessionToken);
 }
 
+export interface AdminPanelSnapshot {
+  devices: Device[];
+  stats: AdminStats;
+  watchingNow: WatchingDevice[];
+  syncedAt: string;
+}
+
+/** A single scoped database snapshot keeps MAC lists and dashboard totals in sync. */
+export async function getPanelSnapshot(): Promise<AdminPanelSnapshot> {
+  const result = await call('get_panel_snapshot');
+  if (!Array.isArray(result.devices) || !Array.isArray(result.watchingNow) || !result.stats ||
+      typeof result.syncedAt !== 'string' || !Number.isFinite(new Date(result.syncedAt).getTime())) {
+    throw new Error('Resposta incompleta ao atualizar os MACs. Os dados anteriores foram mantidos.');
+  }
+  return result;
+}
+
 // ── Devices ──────────────────────────────────────────────
 export async function getDevices(): Promise<Device[]> {
   const { devices } = await call('get_devices');

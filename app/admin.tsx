@@ -23,6 +23,7 @@ import {
   Representative, Source,
 } from '@/services/repApiService';
 import { useAdminPanel } from '@/hooks/useAdminPanel';
+import { useAdminPanelPolling } from '@/hooks/useAdminPanelPolling';
 import { AdminSyncStatus } from '@/components/ui/AdminSyncStatus';
 
 const { width } = Dimensions.get('window');
@@ -76,7 +77,7 @@ export default function AdminScreen() {
   const {
     authenticated, isSubAdmin, currentSubAdmin, loading, refreshing,
     stats, devices, plans, notifications, watchingNow, reps, sources, subAdmins,
-    loaded, syncError, accessError, login, loadAll, loadWatching, refresh, reset,
+    loaded, loadingSections, lastSyncedAt, syncError, accessError, login, syncClients, loadSection, loadAll, loadWatching, refresh, reset,
   } = useAdminPanel();
 
   // Leaving the panel clears only its in-memory session; pending responses cannot repopulate another identity.
@@ -154,8 +155,7 @@ export default function AdminScreen() {
   // null = show rep list; string repId = show that rep's devices; 'admin' = admin direct; 'all' = show all flat
   const [devicesRepFilter, setDevicesRepFilter] = useState<string | null>(null);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const watchingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useAdminPanelPolling(authenticated, syncClients);
 
   // Android fix: open blockReasonModal only after deviceModal is fully closed
   useEffect(() => {
@@ -178,19 +178,14 @@ export default function AdminScreen() {
   }
 
   useEffect(() => {
-    if (authenticated) {
-      intervalRef.current = setInterval(() => loadAll(true), 30000);
-      return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-    }
-  }, [authenticated, loadAll]);
-
-  useEffect(() => {
-    if (authenticated && (activeTab === 'watching' || activeTab === 'dashboard')) {
-      loadWatching();
-      watchingIntervalRef.current = setInterval(loadWatching, 10000);
-      return () => { if (watchingIntervalRef.current) clearInterval(watchingIntervalRef.current); };
-    }
-  }, [authenticated, activeTab, loadWatching]);
+    if (!authenticated) return;
+    // Only the visible tab requests secondary data; these requests never pause MAC synchronization.
+    if (activeTab === 'devices' || activeTab === 'plans' || activeTab === 'add') void loadSection('plans');
+    if (activeTab === 'reps' || activeTab === 'sources') void loadSection('reps');
+    if (activeTab === 'sources') void loadSection('sources');
+    if (activeTab === 'notifications') void loadSection('notifications');
+    if (activeTab === 'subadmins' && !isSubAdmin) void loadSection('subAdmins');
+  }, [authenticated, activeTab, isSubAdmin, loadSection]);
 
   const filteredDevices = devices.filter(d => {
     const matchFilter =
@@ -423,7 +418,7 @@ export default function AdminScreen() {
     );
   }
 
-  const onlineCount = devices.filter(d => isOnline(d.last_seen_at)).length;
+  const onlineCount = stats?.online ?? devices.filter(d => isOnline(d.last_seen_at)).length;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -471,7 +466,10 @@ export default function AdminScreen() {
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { void refresh(); }} tintColor={Colors.primary} />}>
-        <AdminSyncStatus loading={loading} error={syncError} onRetry={() => { void loadAll(); }} />
+        <AdminSyncStatus
+          loading={loading} metadataLoading={Object.values(loadingSections).some(Boolean)}
+          lastSyncedAt={lastSyncedAt} error={syncError} onRetry={() => { void loadAll(); }}
+        />
 
         {/* ── DASHBOARD ── */}
         {activeTab === 'dashboard' && (
@@ -877,7 +875,7 @@ export default function AdminScreen() {
               <Ionicons name="eye-outline" size={18} color="#9C27B0" />
               <Text style={styles.watchingTitle}>Assistindo Agora</Text>
               <View style={styles.watchingLiveDot} />
-              <Text style={styles.watchingLiveText}>Tempo real (atualiza 10s)</Text>
+              <Text style={styles.watchingLiveText}>Atualização a cada 10s</Text>
               <Pressable onPress={loadWatching} hitSlop={8} style={{ marginLeft: 'auto' }}><Ionicons name="refresh" size={18} color={Colors.primary} /></Pressable>
             </View>
             {watchingNow.length === 0 ? (

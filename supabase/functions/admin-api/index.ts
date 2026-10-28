@@ -3,6 +3,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 import { issueRootSession, verifyRootSession } from '../_shared/adminSession.ts';
+import { readPanelRows, buildPanelOverview, countPanelRelations } from '../_shared/adminPanelData.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 
@@ -457,6 +458,21 @@ Deno.serve(async (req) => {
       return resolvedAdminId ? q.eq('admin_id', resolvedAdminId) : q.is('admin_id', null);
     }
 
+    // One fast request for MACs, dashboard totals and viewing state. Secondary tabs do not block it.
+    if (action === 'get_panel_snapshot') {
+      const [devices, plansResult] = await Promise.all([
+        readPanelRows(() => scopeDevices(
+          supabase.from('devices')
+            .select('*, plans(id, name, server_url), representatives(rep_number, name)')
+            .order('created_at', { ascending: false }).order('id', { ascending: false })
+        )),
+        scopePlans(supabase.from('plans').select('id', { count: 'exact', head: true }).eq('active', true)),
+      ]);
+      if (plansResult.error) throw plansResult.error;
+      const overview = buildPanelOverview(devices, plansResult.count ?? 0);
+      return json({ devices, ...overview });
+    }
+
     // ── Sub-admin management (root admin only) ────────────────────────────────
 
     if (action === 'getSubAdmins') {
@@ -529,13 +545,19 @@ Deno.serve(async (req) => {
         supabase.from('representatives').select('*').order('rep_number', { ascending: true })
       );
       if (error) throw error;
-      const withStats = await Promise.all((reps || []).map(async (r: any) => {
-        const { count: activeDevices } = await supabase.from('devices')
-          .select('*', { count: 'exact', head: true }).eq('rep_id', r.id).eq('activated', true);
-        const { data: consumed } = await supabase.from('credit_transactions')
-          .select('amount').eq('rep_id', r.id).eq('type', 'consume');
-        const totalConsumed = (consumed || []).reduce((s: number, t: any) => s + t.amount, 0);
-        return { ...r, active_devices: activeDevices || 0, total_consumed: totalConsumed };
+      if (!reps?.length) return json({ representatives: [] });
+      const repIds = reps.map((rep: any) => rep.id);
+      const [activeRows, consumedRows] = await Promise.all([
+        readPanelRows(() => scopeDevices(supabase.from('devices').select('id, rep_id')
+          .in('rep_id', repIds).eq('activated', true).order('id'))),
+        readPanelRows(() => supabase.from('credit_transactions').select('id, rep_id, amount')
+          .in('rep_id', repIds).eq('type', 'consume').order('id')),
+      ]);
+      const activeCounts = countPanelRelations(activeRows, 'rep_id');
+      const consumedTotals = new Map<string, number>();
+      for (const row of consumedRows) consumedTotals.set(row.rep_id, (consumedTotals.get(row.rep_id) ?? 0) + Number(row.amount));
+      const withStats = reps.map((rep: any) => ({
+        ...rep, active_devices: activeCounts.get(rep.id) ?? 0, total_consumed: consumedTotals.get(rep.id) ?? 0,
       }));
       return json({ representatives: withStats });
     }
@@ -613,10 +635,14 @@ Deno.serve(async (req) => {
         supabase.from('sources').select('*, representatives(name)').order('created_at', { ascending: false })
       );
       if (error) throw error;
-      const withCount = await Promise.all((sources || []).map(async (s: any) => {
-        const { count } = await supabase.from('devices')
-          .select('*', { count: 'exact', head: true }).eq('source_id', s.id).eq('activated', true);
-        return { ...s, active_macs: count || 0, rep_name: s.representatives?.name };
+      if (!sources?.length) return json({ sources: [] });
+      const activeRows = await readPanelRows(() => scopeDevices(
+        supabase.from('devices').select('id, source_id').eq('activated', true)
+          .in('source_id', sources.map((source: any) => source.id)).order('id')
+      ));
+      const counts = countPanelRelations(activeRows, 'source_id');
+      const withCount = sources.map((source: any) => ({
+        ...source, active_macs: counts.get(source.id) ?? 0, rep_name: source.representatives?.name,
       }));
       return json({ sources: withCount });
     }
@@ -654,12 +680,11 @@ Deno.serve(async (req) => {
     // ── Device actions ────────────────────────────────────────────────────────
 
     if (action === 'get_devices') {
-      const { data: devices, error } = await scopeDevices(
+      const devices = await readPanelRows(() => scopeDevices(
         supabase.from('devices')
           .select('*, plans(id, name, server_url), representatives(rep_number, name)')
-          .order('created_at', { ascending: false })
-      );
-      if (error) throw error;
+          .order('created_at', { ascending: false }).order('id', { ascending: false })
+      ));
       return json({ devices });
     }
 
@@ -762,11 +787,13 @@ Deno.serve(async (req) => {
         supabase.from('plans').select('*').order('created_at', { ascending: false })
       );
       if (error) throw error;
-      const plansWithCount = await Promise.all((plans || []).map(async (plan: any) => {
-        const { count } = await supabase.from('devices')
-          .select('*', { count: 'exact', head: true }).eq('plan_id', plan.id).eq('activated', true);
-        return { ...plan, active_macs: count || 0 };
-      }));
+      if (!plans?.length) return json({ plans: [] });
+      const activeRows = await readPanelRows(() => scopeDevices(
+        supabase.from('devices').select('id, plan_id').eq('activated', true)
+          .in('plan_id', plans.map((plan: any) => plan.id)).order('id')
+      ));
+      const counts = countPanelRelations(activeRows, 'plan_id');
+      const plansWithCount = plans.map((plan: any) => ({ ...plan, active_macs: counts.get(plan.id) ?? 0 }));
       return json({ plans: plansWithCount });
     }
 
