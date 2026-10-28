@@ -99,12 +99,12 @@ export interface WatchingDevice {
   rep_id?: string | null;
 }
 
-async function call(action: string, data?: object): Promise<any> {
-  return invokeAdminApi({ action, data, ...getAdminAuthPayload() });
+async function call(action: string, data?: object, refresh = false): Promise<any> {
+  return invokeAdminApi({ action, data, ...getAdminAuthPayload() }, { refresh });
 }
 
-async function callFlat(action: string, payload: Record<string, unknown> = {}): Promise<any> {
-  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() });
+async function callFlat(action: string, payload: Record<string, unknown> = {}, refresh = false): Promise<any> {
+  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() }, { refresh });
 }
 
 export async function rootAdminLogin(password: string): Promise<void> {
@@ -121,8 +121,8 @@ export interface AdminPanelSnapshot {
 }
 
 /** A single scoped database snapshot keeps MAC lists and dashboard totals in sync. */
-export async function getPanelSnapshot(): Promise<AdminPanelSnapshot> {
-  const result = await call('get_panel_snapshot');
+export async function getPanelSnapshot(refresh = false): Promise<AdminPanelSnapshot> {
+  const result = await call('get_panel_snapshot', undefined, refresh);
   if (!Array.isArray(result.devices) || !Array.isArray(result.watchingNow) || !result.stats ||
       typeof result.syncedAt !== 'string' || !Number.isFinite(new Date(result.syncedAt).getTime())) {
     throw new Error('Resposta incompleta ao atualizar os MACs. Os dados anteriores foram mantidos.');
@@ -194,8 +194,8 @@ export async function grantGracePeriod(deviceId: string): Promise<Device> {
 }
 
 // ── Plans ─────────────────────────────────────────────────
-export async function getPlans(): Promise<Plan[]> {
-  const { plans } = await call('get_plans');
+export async function getPlans(refresh = false): Promise<Plan[]> {
+  const { plans } = await call('get_plans', undefined, refresh);
   return plans || [];
 }
 
@@ -241,8 +241,8 @@ export async function sendNotification(params: {
   await call('send_notification', params);
 }
 
-export async function getNotifications(): Promise<Notification[]> {
-  const { notifications } = await call('get_notifications');
+export async function getNotifications(refresh = false): Promise<Notification[]> {
+  const { notifications } = await call('get_notifications', undefined, refresh);
   return notifications || [];
 }
 
@@ -256,8 +256,8 @@ export async function preAuthorizeEmail(email: string, planId: string, macAddres
 }
 
 // ── Sub-admin management (root admin only) ────────────────────
-export async function getSubAdmins(): Promise<SubAdmin[]> {
-  const result = await callFlat('getSubAdmins');
+export async function getSubAdmins(refresh = false): Promise<SubAdmin[]> {
+  const result = await callFlat('getSubAdmins', {}, refresh);
   return result.admins || [];
 }
 

@@ -1,13 +1,15 @@
-/** Representative-only state: independent loading and server-confirmed device changes. */
-import React, { createContext, useCallback, useMemo, useRef, useState } from 'react';
+/** Representative-only state with automatic reconciliation and confirmed MAC/credit updates. */
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { clearRepCredentials, getRepPanelSnapshot, getRepSources, repLogin, setRepCredentials } from '@/services/repApiService';
+import { clearRepCredentials, getRepAuthPayload, getRepPanelSnapshot, getRepSources, repLogin, setRepCredentials } from '@/services/repApiService';
 import type { Representative, RepDevice, Source } from '@/services/repApiService';
 import { isAdminAuthError } from '@/services/adminTransportService';
 import { applyConfirmedDeviceChange } from '@/services/panelStateService';
+import { createPanelSyncQueue } from '@/services/panelSyncQueue';
+import type { PanelSyncQueue } from '@/services/panelSyncQueue';
+import { getPanelScopeKey, subscribePanelChanges } from '@/services/panelChangeService';
 import { repSourcesFreshnessMs } from '@/constants/repPanel';
 
-interface PendingRequest { epoch: number; promise: Promise<void>; }
 export interface RepPanelContextType {
   loggedIn: boolean; rep: Representative | null; devices: RepDevice[]; sources: Source[];
   clientsLoaded: boolean; sourcesLoaded: boolean; loading: boolean; sourcesLoading: boolean;
@@ -38,21 +40,21 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const repId = useRef<string | null>(null);
   const generation = useRef(0);
-  const clientRevision = useRef(0);
-  const sourceRevision = useRef(0);
-  const clientsPending = useRef<PendingRequest | null>(null);
-  const sourcesPending = useRef<PendingRequest | null>(null);
+  const clientQueue = useRef<PanelSyncQueue | null>(null);
+  const sourceQueue = useRef<PanelSyncQueue | null>(null);
   const sourcesUpdatedAt = useRef(0);
   const loginPending = useRef(false);
 
   const reset = useCallback(() => {
-    generation.current += 1; clientRevision.current += 1; sourceRevision.current += 1;
+    generation.current += 1;
+    clientQueue.current?.dispose(); sourceQueue.current?.dispose();
+    clientQueue.current = null; sourceQueue.current = null; sourcesUpdatedAt.current = 0;
     repId.current = null; clearRepCredentials();
-    clientsPending.current = null; sourcesPending.current = null; sourcesUpdatedAt.current = 0;
     setRep(null); setDevices([]); setSources([]); setClientsLoaded(false); setSourcesLoaded(false);
     setLoading(false); setSourcesLoading(false); setRefreshing(false); setLoginLoading(false);
     setAccessError(''); setClientError(''); setSourceError(''); setLastSyncedAt(null);
   }, []);
+  useEffect(() => () => { generation.current += 1; clientQueue.current?.dispose(); sourceQueue.current?.dispose(); }, []);
   const reportError = useCallback((error: unknown, epoch: number, section: 'clients' | 'sources') => {
     if (epoch !== generation.current) return;
     if (isAdminAuthError(error)) {
@@ -62,61 +64,55 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
     if (section === 'clients') setClientError(message); else setSourceError(message);
   }, [reset]);
 
-  const syncClients: RepPanelContextType['syncClients'] = useCallback((silent = false, force = false): Promise<void> => {
+  const syncClients: RepPanelContextType['syncClients'] = useCallback((silent = false, force = false) => {
     if (!repId.current) return Promise.resolve();
-    const epoch = generation.current;
     if (!silent) setLoading(true);
-    if (force) clientRevision.current += 1;
-    const pending = clientsPending.current;
-    if (pending?.epoch === epoch) return force
-      ? pending.promise.then(() => epoch === generation.current ? syncClients(silent) : undefined)
-      : pending.promise;
-    const revision = clientRevision.current;
-    const promise = getRepPanelSnapshot().then(snapshot => {
-      if (epoch !== generation.current || revision !== clientRevision.current || snapshot.rep.id !== repId.current) return;
-      setDevices(snapshot.devices); setRep(snapshot.rep); setClientsLoaded(true);
-      setLastSyncedAt(snapshot.syncedAt); setClientError('');
-    }).catch(error => { if (revision === clientRevision.current) reportError(error, epoch, 'clients'); }).finally(() => {
-      if (epoch !== generation.current) return;
-      clientsPending.current = null; setLoading(false);
-    });
-    clientsPending.current = { epoch, promise };
-    return promise;
+    if (!clientQueue.current) {
+      const epoch = generation.current;
+      clientQueue.current = createPanelSyncQueue({
+        read: getRepPanelSnapshot,
+        apply: snapshot => {
+          if (epoch !== generation.current || snapshot.rep.id !== repId.current) return;
+          setDevices(snapshot.devices); setRep(snapshot.rep); setClientsLoaded(true);
+          setLastSyncedAt(snapshot.syncedAt); setClientError('');
+        },
+        onError: error => reportError(error, epoch, 'clients'),
+        onIdle: () => { if (epoch === generation.current) setLoading(false); },
+      });
+    }
+    return clientQueue.current.request(force);
   }, [reportError]);
 
-  const loadSources: RepPanelContextType['loadSources'] = useCallback((force = false): Promise<void> => {
+  const loadSources: RepPanelContextType['loadSources'] = useCallback((force = false) => {
     if (!repId.current) return Promise.resolve();
-    const epoch = generation.current;
-    if (force) { sourceRevision.current += 1; sourcesUpdatedAt.current = 0; }
-    const pending = sourcesPending.current;
-    if (pending?.epoch === epoch) return force
-      ? pending.promise.then(() => epoch === generation.current ? loadSources() : undefined)
-      : pending.promise;
     if (!force && sourcesUpdatedAt.current && Date.now() - sourcesUpdatedAt.current < repSourcesFreshnessMs) return Promise.resolve();
-    const revision = sourceRevision.current;
     setSourcesLoading(true);
-    const promise = getRepSources().then(value => {
-      if (epoch !== generation.current || revision !== sourceRevision.current) return;
-      setSources(value); setSourcesLoaded(true); setSourceError(''); sourcesUpdatedAt.current = Date.now();
-    }).catch(error => { if (revision === sourceRevision.current) reportError(error, epoch, 'sources'); }).finally(() => {
-      if (epoch !== generation.current) return;
-      sourcesPending.current = null; setSourcesLoading(false);
-    });
-    sourcesPending.current = { epoch, promise };
-    return promise;
+    if (!sourceQueue.current) {
+      const epoch = generation.current;
+      sourceQueue.current = createPanelSyncQueue({
+        read: fresh => getRepSources(undefined, fresh),
+        apply: value => {
+          if (epoch !== generation.current) return;
+          setSources(value); setSourcesLoaded(true); setSourceError(''); sourcesUpdatedAt.current = Date.now();
+        },
+        onError: error => reportError(error, epoch, 'sources'),
+        onIdle: () => { if (epoch === generation.current) setSourcesLoading(false); },
+      });
+    }
+    if (force) sourcesUpdatedAt.current = 0;
+    return sourceQueue.current.request(force);
   }, [reportError]);
 
   const commitDeviceChange = useCallback((device: RepDevice | null, removedIds: string[] = [], updatedRep?: Representative) => {
     if (!repId.current || (device && device.rep_id !== repId.current)) return;
     if (updatedRep && (updatedRep.id !== repId.current || !Number.isFinite(Number(updatedRep.credits)))) return;
-    clientRevision.current += 1; sourceRevision.current += 1; sourcesUpdatedAt.current = 0;
+    clientQueue.current?.invalidate(); sourceQueue.current?.invalidate(); sourcesUpdatedAt.current = 0;
     setDevices(previous => applyConfirmedDeviceChange(previous, device, removedIds));
-    if (updatedRep) {
-      setRep(previous => previous?.id === updatedRep.id
-        ? { ...previous, ...updatedRep, credits: Number(updatedRep.credits) } : previous);
-    }
+    if (updatedRep) setRep(previous => previous?.id === updatedRep.id
+      ? { ...previous, ...updatedRep, credits: Number(updatedRep.credits) } : previous);
   }, []);
   const loadData = useCallback(async (showLoader = false): Promise<void> => {
+    if (!repId.current) return;
     await Promise.allSettled([syncClients(!showLoader, true), loadSources(true)]);
   }, [syncClients, loadSources]);
   const refresh = useCallback(async (): Promise<void> => {
@@ -125,10 +121,14 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
     try { await loadData(true); } finally { if (epoch === generation.current) setRefreshing(false); }
   }, [loadData]);
   const refreshAfterChange = useCallback(async (): Promise<void> => {
-    sourcesUpdatedAt.current = 0;
-    // Credit reconciliation is asynchronous; a second network call never delays confirmation of a write.
+    // Called on unconfirmed writes; only reads are retried, never renewal/activation/deletion.
+    await Promise.allSettled([syncClients(true, true), loadSources(true)]);
+  }, [syncClients, loadSources]);
+  useEffect(() => subscribePanelChanges(change => {
+    if (!repId.current || change.scopeKey !== getPanelScopeKey(getRepAuthPayload())) return;
     void syncClients(true, true);
-  }, [syncClients]);
+    if (change.sections.includes('sources')) void loadSources(true);
+  }), [syncClients, loadSources]);
   const login = useCallback(async (repNumber: string, password: string): Promise<string | null> => {
     if (loginPending.current) return 'Aguarde o login em andamento.';
     loginPending.current = true; reset();
@@ -138,7 +138,7 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
       if (epoch !== generation.current) return null;
       if (!result.ok || !result.rep?.id) return result.error || 'Código ou senha incorretos.';
       setRepCredentials(result.rep.id, password); repId.current = result.rep.id; setRep(result.rep);
-      void syncClients(); void loadSources();
+      void syncClients(false, true); void loadSources(true);
       return null;
     } catch (error) {
       return epoch === generation.current ? (error instanceof Error ? error.message : 'Não foi possível entrar.') : null;
@@ -157,7 +157,7 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
   const syncError = useMemo(() => {
     const messages = [clientError ? `MACs e clientes: ${clientError}` : '', sourceError ? `Fontes: ${sourceError}` : ''].filter(Boolean);
     if (!messages.length) return '';
-    return `${messages.join(' ')} ${clientsLoaded || sourcesLoaded ? 'Dados já confirmados continuam disponíveis.' : 'Ainda não há dados confirmados. Tente atualizar novamente.'}`;
+    return `${messages.join(' ')} A sincronização tentará novamente automaticamente. ${clientsLoaded || sourcesLoaded ? 'Dados já confirmados continuam disponíveis.' : 'Ainda não há dados confirmados.'}`;
   }, [clientError, sourceError, clientsLoaded, sourcesLoaded]);
   const value = useMemo<RepPanelContextType>(() => ({ loggedIn: rep !== null, rep, devices, sources: displaySources,
     clientsLoaded, sourcesLoaded, loading, sourcesLoading, refreshing, loginLoading, accessError, syncError, lastSyncedAt,

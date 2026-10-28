@@ -12,15 +12,18 @@ export function useRepPanelActions() {
         catch (error) { void refreshAfterChange(); throw error; }
       };
     }
-    function withReconciliation<Args extends unknown[], Result>(action: (...args: Args) => Promise<Result>) {
-      return async (...args: Args): Promise<Result> => {
-        try { return await action(...args); }
-        finally { void refreshAfterChange(); }
+    function withActivation<Args extends unknown[]>(action: (...args: Args) => Promise<repApi.RepActivationResult>) {
+      return async (...args: Args): Promise<repApi.RepActivationResult> => {
+        try {
+          const result = await action(...args);
+          commitDeviceChange(result.device, [], result.rep);
+          return result;
+        } catch (error) { void refreshAfterChange(); throw error; }
       };
     }
     return {
-      activateRepDevice: withReconciliation(repApi.activateRepDevice),
-      activateRepTest: withReconciliation(repApi.activateRepTest),
+      activateRepDevice: withActivation(repApi.activateRepDevice),
+      activateRepTest: withActivation(repApi.activateRepTest),
       renewRepDevice: async (deviceId: string, days: number): Promise<repApi.RepRenewalResult> => {
         try {
           const result = await repApi.renewRepDevice(deviceId, days);

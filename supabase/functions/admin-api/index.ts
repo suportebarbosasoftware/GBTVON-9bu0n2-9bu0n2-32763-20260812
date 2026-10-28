@@ -215,14 +215,18 @@ async function handleBody(body: any): Promise<Response> {
         package_type: body.packageType || 'iptv', rep_id: repId, admin_id: rep.admin_id ?? null,
         activated: true, activated_at: now, expires_at: expiry.toISOString(), blocked_reason: null,
         block_reason_detail: null, blocked_at: null, updated_at: now };
-      if (existing) await dataOf(supabase.from('devices').update(values).eq('id', existing.id));
-      else await dataOf(supabase.from('devices').insert({ ...values, mac_address: mac,
-        device_name: test ? 'Teste gratuito' : 'Ativado pelo representante', platform: 'unknown', last_seen_at: now }));
-      if (!test) await dataOf(supabase.from('representatives').update({ credits: Number(rep.credits) - cost, updated_at: now }).eq('id', repId));
+      const device = existing
+        ? await dataOf(supabase.from('devices').update(values).eq('id', existing.id).select('*, sources(name)').single())
+        : await dataOf(supabase.from('devices').insert({ ...values, mac_address: mac,
+          device_name: test ? 'Teste gratuito' : 'Ativado pelo representante', platform: 'unknown', last_seen_at: now }).select('*, sources(name)').single());
+      let updatedRep = rep;
+      if (!test) updatedRep = await dataOf(supabase.from('representatives')
+        .update({ credits: Number(rep.credits) - cost, updated_at: now }).eq('id', repId)
+        .select('id, rep_number, name, credits, active, notes, created_at, updated_at, admin_id').single());
       await dataOf(supabase.from('credit_transactions').insert({ rep_id: repId, amount: Math.ceil(cost), type: 'consume',
         description: test ? `Teste ${period}h — ${mac}` : `Ativação ${period}d ${body.packageType?.toUpperCase()} — ${mac} (custo real: ${cost.toFixed(2)} cr.)`,
         device_mac: mac, days: test ? 0 : period }));
-      return json({ success: true, credit_cost: cost });
+      return json({ success: true, credit_cost: cost, device, rep: updatedRep });
     }
     if (action === 'deleteRepDevice') return confirmedDeletion(supabase.from('devices').delete().eq('id', deviceId).eq('rep_id', repId), true);
     const now = new Date().toISOString();

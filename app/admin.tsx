@@ -80,7 +80,7 @@ export default function AdminScreen() {
   const {
     authenticated, isSubAdmin, currentSubAdmin, loading, refreshing,
     stats, devices, plans, notifications, watchingNow, reps, sources, subAdmins,
-    loaded, loadingSections, lastSyncedAt, syncError, accessError, login, syncClients, loadSection, loadAll, loadWatching, refresh, reset,
+    loaded, loadingSections, lastSyncedAt, syncError, accessError, login, syncPanel, loadSection, loadAll, loadWatching, refresh, reset,
   } = useAdminPanel();
 
   // Leaving the panel clears only its in-memory session; pending responses cannot repopulate another identity.
@@ -158,7 +158,7 @@ export default function AdminScreen() {
   // null = show rep list; string repId = show that rep's devices; 'admin' = admin direct; 'all' = show all flat
   const [devicesRepFilter, setDevicesRepFilter] = useState<string | null>(null);
 
-  useAdminPanelPolling(authenticated, syncClients);
+  useAdminPanelPolling(authenticated, syncPanel);
 
   useEffect(() => {
     if (!authenticated) {
@@ -330,7 +330,7 @@ export default function AdminScreen() {
       } else {
         await createPlan({ name: planForm.name, server_url: planForm.server_url, xtream_username: planForm.xtream_username, xtream_password: planForm.xtream_password, max_macs: parseInt(planForm.max_macs) || 5, notes: planForm.notes });
       }
-      setPlanModal(false); void loadAll(true);
+      setPlanModal(false);
     } catch (err: any) { showAlert('Erro', err.message); }
     setPlanFormLoading(false);
   }
@@ -338,12 +338,12 @@ export default function AdminScreen() {
   async function handleDeletePlan(plan: Plan) {
     showAlert('Excluir Plano', `Excluir "${plan.name}"?`, [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deletePlan(plan.id); void loadAll(true); } catch (err: any) { showAlert('Erro', err.message); } } }
+      { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deletePlan(plan.id); } catch (err: any) { showAlert('Erro', err.message); } } }
     ]);
   }
 
   async function handleDeleteNotification(notificationId: string) {
-    try { await deleteNotification(notificationId); void loadAll(true); } catch (err: any) { showAlert('Erro ao excluir', err.message); }
+    try { await deleteNotification(notificationId); } catch (err: any) { showAlert('Erro ao excluir', err.message); }
   }
 
   async function handleSendNotification() {
@@ -351,7 +351,7 @@ export default function AdminScreen() {
     setNotifLoading(true);
     try {
       await sendNotification({ title: notifForm.title, message: notifForm.message, targetEmail: notifForm.isBroadcast ? undefined : notifForm.targetEmail || undefined });
-      showAlert('Aviso enviado!'); setNotifModal(false); setNotifForm({ title: '', message: '', targetEmail: '', isBroadcast: true }); void loadAll(true);
+      showAlert('Aviso enviado!'); setNotifModal(false); setNotifForm({ title: '', message: '', targetEmail: '', isBroadcast: true });
     } catch (err: any) { showAlert('Erro', err.message); }
     setNotifLoading(false);
   }
@@ -362,7 +362,7 @@ export default function AdminScreen() {
     try {
       await preAuthorizeEmail(preAuthEmail, preAuthPlanId, preAuthMac);
       showAlert('Sucesso', `${preAuthEmail} pré-autorizado!`);
-      setPreAuthEmail(''); setPreAuthMac(''); setPreAuthPlanId(''); void loadAll(true);
+      setPreAuthEmail(''); setPreAuthMac(''); setPreAuthPlanId('');
     } catch (err: any) { showAlert('Erro', err.message); }
     setPreAuthLoading(false);
   }
@@ -759,7 +759,7 @@ export default function AdminScreen() {
                   <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(255,215,0,0.3)' }]} onPress={() => { setCreditsRep(r); setCreditsInput(''); setCreditsDescription(''); setCreditsMode('add'); setCreditsModal(true); }}>
                     <Ionicons name="wallet-outline" size={16} color="#FFD700" /><Text style={[styles.planActionText, { color: '#FFD700' }]}>Créditos</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir', `Excluir ${r.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteRepresentative(r.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir', `Excluir ${r.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteRepresentative(r.id); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                     <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                   </Pressable>
                 </View>
@@ -842,7 +842,7 @@ export default function AdminScreen() {
                           <Pressable style={styles.planActionBtn} onPress={() => { setEditingSource(s); setSourceForm({ name: s.name, server_url: s.server_url, xtream_username: s.xtream_username, xtream_password: s.xtream_password, max_connections: String(s.max_connections), rep_id: s.rep_id || '', notes: s.notes || '' }); setSourceModal(true); }}>
                             <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
                           </Pressable>
-                          <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
+                          <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                             <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                           </Pressable>
                         </View>
@@ -1074,10 +1074,10 @@ export default function AdminScreen() {
                   <Pressable style={styles.planActionBtn} onPress={() => { setEditingSubAdmin(sa); setSubAdminForm({ username: sa.username, password: '', name: sa.name, notes: sa.notes || '' }); setSubAdminModal(true); }}>
                     <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: sa.active ? 'rgba(255,152,0,0.3)' : 'rgba(76,175,80,0.3)' }]} onPress={async () => { try { await updateSubAdmin(sa.id, { active: !sa.active }); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } }}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: sa.active ? 'rgba(255,152,0,0.3)' : 'rgba(76,175,80,0.3)' }]} onPress={async () => { try { await updateSubAdmin(sa.id, { active: !sa.active }); } catch (e: any) { showAlert('Erro', e.message); } }}>
                     <Ionicons name={sa.active ? 'pause-circle-outline' : 'play-circle-outline'} size={16} color={sa.active ? '#FF9800' : '#4CAF50'} /><Text style={[styles.planActionText, { color: sa.active ? '#FF9800' : '#4CAF50' }]}>{sa.active ? 'Suspender' : 'Ativar'}</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Sub-Admin', `Excluir ${sa.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSubAdmin(sa.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Sub-Admin', `Excluir ${sa.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSubAdmin(sa.id); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                     <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                   </Pressable>
                 </View>
@@ -1291,7 +1291,7 @@ export default function AdminScreen() {
                     try {
                       if (editingRep) { await updateRepresentative(editingRep.id, { name: repForm.name, password: repForm.password || undefined, notes: repForm.notes }); }
                       else { await createRepresentative({ name: repForm.name, rep_number: repForm.rep_number, password: repForm.password, credits: parseInt(repForm.credits) || 0, notes: repForm.notes }); }
-                      setRepModal(false); void loadAll(true);
+                      setRepModal(false);
                     } catch (e: any) { showAlert('Erro', e.message); }
                     setRepFormLoading(false);
                   }} disabled={repFormLoading}>
@@ -1394,7 +1394,6 @@ export default function AdminScreen() {
                       setCreditsModal(false);
                       setCreditsInput('');
                       setCreditsDescription('');
-                      void loadAll(true);
                     } catch (e: any) { showAlert('Erro', e.message); }
                     setCreditsLoading(false);
                   }}
@@ -1452,7 +1451,6 @@ export default function AdminScreen() {
                         await createSubAdmin({ username: subAdminForm.username, password: subAdminForm.password, name: subAdminForm.name, notes: subAdminForm.notes || undefined });
                       }
                       setSubAdminModal(false);
-                      void loadAll(true);
                     } catch (e: any) { showAlert('Erro', e.message); }
                     setSubAdminFormLoading(false);
                   }} disabled={subAdminFormLoading}>
@@ -1501,7 +1499,7 @@ export default function AdminScreen() {
                     try {
                       if (editingSource) { await updateSource(editingSource.id, { name: sourceForm.name, server_url: sourceForm.server_url, xtream_username: sourceForm.xtream_username, xtream_password: sourceForm.xtream_password, max_connections: parseInt(sourceForm.max_connections) || 5, rep_id: sourceForm.rep_id || null, notes: sourceForm.notes || null } as any); }
                       else { await createSource({ name: sourceForm.name, server_url: sourceForm.server_url, xtream_username: sourceForm.xtream_username, xtream_password: sourceForm.xtream_password, max_connections: parseInt(sourceForm.max_connections) || 5, rep_id: sourceForm.rep_id || null, notes: sourceForm.notes }); }
-                      setSourceModal(false); void loadAll(true);
+                      setSourceModal(false);
                     } catch (e: any) { showAlert('Erro', e.message); }
                     setSourceFormLoading(false);
                   }} disabled={sourceFormLoading}>

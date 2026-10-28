@@ -2,6 +2,7 @@
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { createPanelRequestGate } from '@/services/panelRequestGate';
+import { publishPanelMutation } from '@/services/panelChangeService';
 
 export class AdminApiError extends Error {
   readonly status: number;
@@ -85,7 +86,7 @@ async function invokeOnce(body: Record<string, unknown>, readOnly: boolean): Pro
   }
 }
 
-export function invokeAdminApi(body: Record<string, unknown>): Promise<any> {
+export function invokeAdminApi(body: Record<string, unknown>, options: { refresh?: boolean } = {}): Promise<any> {
   const action = String(body.action ?? '');
   const readOnly = action.startsWith('get') || action === 'lookupDeviceByMac' || action === 'validateRepCode';
   const key = JSON.stringify(body);
@@ -94,14 +95,17 @@ export function invokeAdminApi(body: Record<string, unknown>): Promise<any> {
     const pending = pendingWrites.get(key);
     if (pending) return pending;
     // Writes start immediately. NEW polling reads wait; existing reads never block an action.
-    const request = requestGate.runWrite(() => invokeOnce(body, false)).finally(() => { pendingWrites.delete(key); });
+    const request = requestGate.runWrite(() => invokeOnce(body, false)).then(data => {
+      if (!data.error && data.ok !== false) publishPanelMutation(body);
+      return data;
+    }).finally(() => { pendingWrites.delete(key); });
     pendingWrites.set(key, request);
     return request;
   }
   const pending = pendingReads.get(key);
   if (pending) return pending;
   const request = requestGate.runRead(() => {
-    if (Date.now() < retryReadsAt) {
+    if (!options.refresh && Date.now() < retryReadsAt) {
       return Promise.reject(new AdminApiError('O servidor está sem resposta. A próxima consulta será feita automaticamente; login e ações continuam disponíveis.', 0, 'server_backoff'));
     }
     return invokeOnce(body, true);

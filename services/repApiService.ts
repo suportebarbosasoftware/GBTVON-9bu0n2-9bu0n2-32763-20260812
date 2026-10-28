@@ -21,6 +21,8 @@ export function setRepCredentials(repId: string, password: string) {
   _repPassword = password;
 }
 export function clearRepCredentials() { _repId = ''; _repPassword = ''; }
+/** Private in-memory identity used to route synchronization notifications. */
+export function getRepAuthPayload(): Record<string, unknown> { return { repId: _repId, repPassword: _repPassword }; }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,13 +95,13 @@ export interface RepDevice {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function callAdmin(action: string, payload?: Record<string, any>): Promise<any> {
-  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() });
+async function callAdmin(action: string, payload?: Record<string, any>, refresh = false): Promise<any> {
+  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() }, { refresh });
 }
 
 /** Representative authentication remains independent from the administrative session. */
-async function callRep(action: string, payload?: Record<string, any>): Promise<any> {
-  return invokeAdminApi({ ...payload, action, repId: _repId, repPassword: _repPassword });
+async function callRep(action: string, payload?: Record<string, any>, refresh = false): Promise<any> {
+  return invokeAdminApi({ ...payload, action, ...getRepAuthPayload() }, { refresh });
 }
 
 async function callPublic(action: string, payload?: Record<string, any>): Promise<any> {
@@ -108,8 +110,8 @@ async function callPublic(action: string, payload?: Record<string, any>): Promis
 
 // ─── Representatives (admin) ──────────────────────────────────────────────────
 
-export async function getRepresentatives(): Promise<Representative[]> {
-  const data = await callAdmin('getRepresentatives');
+export async function getRepresentatives(refresh = false): Promise<Representative[]> {
+  const data = await callAdmin('getRepresentatives', undefined, refresh);
   return data?.representatives ?? [];
 }
 
@@ -157,8 +159,8 @@ export async function getCreditTransactions(repId: string): Promise<CreditTransa
 
 // ─── Sources (admin) ──────────────────────────────────────────────────────────
 
-export async function getSources(): Promise<Source[]> {
-  const data = await callAdmin('getSources');
+export async function getSources(refresh = false): Promise<Source[]> {
+  const data = await callAdmin('getSources', undefined, refresh);
   return data?.sources ?? [];
 }
 
@@ -217,9 +219,9 @@ export interface RepPanelSnapshot {
   syncedAt: string;
 }
 
-export async function getRepPanelSnapshot(): Promise<RepPanelSnapshot> {
+export async function getRepPanelSnapshot(refresh = false): Promise<RepPanelSnapshot> {
   const expectedRepId = _repId;
-  const data = await callRep('getRepPanelSnapshot');
+  const data = await callRep('getRepPanelSnapshot', undefined, refresh);
   if (!expectedRepId || data.rep?.id !== expectedRepId || !Array.isArray(data.devices) ||
       data.devices.some((device: { rep_id?: string }) => device.rep_id !== expectedRepId) ||
       !Number.isFinite(Number(data.rep.credits)) || typeof data.syncedAt !== 'string' ||
@@ -235,12 +237,26 @@ export async function getRepDevices(repId?: string): Promise<RepDevice[]> {
   return data.devices;
 }
 
-export async function getRepSources(repId?: string): Promise<Source[]> {
-  const data = await callRep('getRepSources', repId ? { repId } : {});
+export async function getRepSources(repId?: string, refresh = false): Promise<Source[]> {
+  const data = await callRep('getRepSources', repId ? { repId } : {}, refresh);
   if (!Array.isArray(data.sources) || data.sources.some((source: Source) => source.rep_id !== _repId)) {
     throw new Error('Resposta incompleta ao carregar as fontes do representante.');
   }
   return data.sources;
+}
+
+export interface RepActivationResult { device: RepDevice; rep: Representative; credit_cost: number; }
+
+function confirmedActivation(data: any, mac: string): RepActivationResult {
+  const normalize = (value: string) => value.toUpperCase().replace(/[^A-F0-9]/g, '');
+  if (!data?.device?.id || normalize(data.device.mac_address || '') !== normalize(mac)) {
+    throw new Error('A confirmação da ativação está incompleta. O painel será atualizado automaticamente para conferir.');
+  }
+  const device = confirmedRepDevice(data, data.device.id);
+  if (data.rep?.id !== device.rep_id || !Number.isFinite(Number(data.rep?.credits)) || !device.activated) {
+    throw new Error('O servidor não confirmou o MAC e o saldo. Aguarde a sincronização antes de repetir.');
+  }
+  return { device, rep: { ...data.rep, credits: Number(data.rep.credits) }, credit_cost: Number(data.credit_cost) };
 }
 
 export async function activateRepDevice(payload: {
@@ -251,8 +267,8 @@ export async function activateRepDevice(payload: {
   packageType: 'iptv' | 'p2p';
   days: number;
   expiresAtDate?: string;
-}): Promise<void> {
-  await callRep('activateRepDevice', payload);
+}): Promise<RepActivationResult> {
+  return confirmedActivation(await callRep('activateRepDevice', payload), payload.mac);
 }
 
 export async function activateRepTest(payload: {
@@ -262,8 +278,8 @@ export async function activateRepTest(payload: {
   sourceId: string;
   packageType: 'iptv' | 'p2p';
   hours: number;
-}): Promise<void> {
-  await callRep('activateRepTest', payload);
+}): Promise<RepActivationResult> {
+  return confirmedActivation(await callRep('activateRepTest', payload), payload.mac);
 }
 
 /** Lookup a device by MAC address (to auto-fill client name) */

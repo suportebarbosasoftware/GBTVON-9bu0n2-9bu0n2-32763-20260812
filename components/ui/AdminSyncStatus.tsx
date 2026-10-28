@@ -26,7 +26,7 @@ export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, o
       {updatedTime ? (
         <View style={styles.updatedRow}>
           <Ionicons name={error ? 'time-outline' : 'checkmark-circle-outline'} size={18} color={error ? Colors.warning : Colors.success} />
-          <Text style={styles.updatedText}>Última sincronização dos MACs: {updatedTime}</Text>
+          <Text style={styles.updatedText}>Sincronização automática · última leitura: {updatedTime}</Text>
         </View>
       ) : null}
       {error ? <Text style={styles.message}>Se a falta de resposta persistir nos dois painéis, encaminhe os horários da falha ao suporte: contact@onspace.ai.</Text> : null}

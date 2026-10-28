@@ -1,13 +1,16 @@
-/** Shared administrative state with independent reads and confirmed device updates. */
-import React, { createContext, useCallback, useMemo, useRef, useState } from 'react';
+/** Shared administrative state: automatic scoped sync and immediate server-confirmed changes. */
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { getPanelSnapshot, getPlans, getNotifications, getSubAdmins, rootAdminLogin, subAdminLogin } from '@/services/adminApiService';
 import type { Device, Plan, AdminStats, Notification, WatchingDevice, SubAdmin } from '@/services/adminApiService';
 import { getRepresentatives, getSources } from '@/services/repApiService';
 import type { Representative, Source } from '@/services/repApiService';
-import { clearAdminSession, setSubAdminCredentials } from '@/services/adminSessionService';
+import { clearAdminSession, getAdminAuthPayload, setSubAdminCredentials } from '@/services/adminSessionService';
 import { isAdminAuthError } from '@/services/adminTransportService';
 import { applyConfirmedDeviceChange, buildConfirmedPanelOverview } from '@/services/panelStateService';
+import { createPanelSyncQueue } from '@/services/panelSyncQueue';
+import type { PanelSyncQueue } from '@/services/panelSyncQueue';
+import { getPanelScopeKey, subscribePanelChanges } from '@/services/panelChangeService';
 import { panelMetadataFreshnessMs } from '@/constants/adminPanel';
 
 type SecondarySection = 'plans' | 'notifications' | 'reps' | 'sources' | 'subAdmins';
@@ -17,7 +20,6 @@ interface PanelData {
   reps: Representative[]; sources: Source[]; subAdmins: SubAdmin[]; watchingNow: WatchingDevice[];
 }
 interface PanelIdentity { subAdmin: SubAdmin | null; }
-interface InFlight { generation: number; promise: Promise<void>; }
 export interface AdminPanelContextType extends PanelData {
   authenticated: boolean; isSubAdmin: boolean; currentSubAdmin: SubAdmin | null;
   loading: boolean; refreshing: boolean; lastSyncedAt: string | null;
@@ -26,6 +28,7 @@ export interface AdminPanelContextType extends PanelData {
   syncError: string; accessError: string;
   login: (mode: 'root' | 'subadmin', password: string, username: string) => Promise<string | null>;
   syncClients: (silent?: boolean, force?: boolean) => Promise<void>;
+  syncPanel: (silent?: boolean, force?: boolean) => Promise<void>;
   commitDeviceChange: (device: Device | null, removedIds?: string[]) => void;
   loadSection: (section: SecondarySection, force?: boolean) => Promise<void>;
   loadAll: (silent?: boolean) => Promise<void>;
@@ -33,7 +36,7 @@ export interface AdminPanelContextType extends PanelData {
 }
 const emptyData = (): PanelData => ({ stats: null, devices: [], plans: [], notifications: [], reps: [], sources: [], subAdmins: [], watchingNow: [] });
 const labels: Record<Section, string> = { stats: 'Resumo', devices: 'MACs e clientes', plans: 'Planos', notifications: 'Avisos', reps: 'Representantes', sources: 'Fontes', subAdmins: 'Sub-admins', watchingNow: 'Assistindo' };
-const metadataLoaders: Record<SecondarySection, () => Promise<unknown>> = { plans: getPlans, notifications: getNotifications, reps: getRepresentatives, sources: getSources, subAdmins: getSubAdmins };
+const metadataLoaders: Record<SecondarySection, (fresh?: boolean) => Promise<unknown>> = { plans: getPlans, notifications: getNotifications, reps: getRepresentatives, sources: getSources, subAdmins: getSubAdmins };
 export const AdminPanelContext = createContext<AdminPanelContextType | undefined>(undefined);
 
 export function AdminPanelProvider({ children }: { children: ReactNode }) {
@@ -48,23 +51,26 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
   const [accessError, setAccessError] = useState('');
   const identityRef = useRef<PanelIdentity | null>(null);
   const generation = useRef(0);
-  const clientRevision = useRef(0);
   const clientsLoadedRef = useRef(false);
   const loginInFlight = useRef(false);
-  const clientsInFlight = useRef<InFlight | null>(null);
-  const metadataInFlight = useRef<Partial<Record<SecondarySection, InFlight>>>({});
-  const metadataRevision = useRef<Partial<Record<SecondarySection, number>>>({});
+  const clientQueue = useRef<PanelSyncQueue | null>(null);
+  const metadataQueues = useRef<Partial<Record<SecondarySection, PanelSyncQueue>>>({});
   const metadataUpdatedAt = useRef<Partial<Record<SecondarySection, number>>>({});
   const requestedSections = useRef<Set<SecondarySection>>(new Set());
 
   const reset = useCallback(() => {
-    generation.current += 1; clientRevision.current += 1;
+    generation.current += 1;
+    clientQueue.current?.dispose(); clientQueue.current = null;
+    for (const queue of Object.values(metadataQueues.current)) queue?.dispose();
+    metadataQueues.current = {}; metadataUpdatedAt.current = {}; requestedSections.current = new Set();
     identityRef.current = null; clientsLoadedRef.current = false;
     clearAdminSession(); setIdentity(null); setData(emptyData());
     setLoaded({}); setLoadingSections({}); setErrors({}); setAccessError('');
     setLoading(false); setRefreshing(false); setLastSyncedAt(null);
-    clientsInFlight.current = null; metadataInFlight.current = {}; metadataRevision.current = {};
-    requestedSections.current = new Set(); metadataUpdatedAt.current = {};
+  }, []);
+  useEffect(() => () => {
+    generation.current += 1; clientQueue.current?.dispose();
+    for (const queue of Object.values(metadataQueues.current)) queue?.dispose();
   }, []);
   const reportError = useCallback((error: unknown, epoch: number, key: Section) => {
     if (generation.current !== epoch) return;
@@ -73,29 +79,26 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
     setErrors(previous => ({ ...previous, [key]: message }));
   }, [reset]);
 
-  const syncClients: AdminPanelContextType['syncClients'] = useCallback((silent = false, force = false): Promise<void> => {
+  const syncClients: AdminPanelContextType['syncClients'] = useCallback((silent = false, force = false) => {
     if (!identityRef.current) return Promise.resolve();
-    const epoch = generation.current;
     if (!silent) setLoading(true);
-    if (force) clientRevision.current += 1;
-    const pending = clientsInFlight.current;
-    if (pending?.generation === epoch) return force
-      ? pending.promise.then(() => generation.current === epoch ? syncClients(silent) : undefined)
-      : pending.promise;
-    const revision = clientRevision.current;
-    const promise = getPanelSnapshot().then(snapshot => {
-      if (generation.current !== epoch || revision !== clientRevision.current) return;
-      clientsLoadedRef.current = true;
-      setData(previous => ({ ...previous, devices: snapshot.devices, stats: snapshot.stats, watchingNow: snapshot.watchingNow }));
-      setLoaded(previous => ({ ...previous, devices: true, stats: true, watchingNow: true }));
-      setLastSyncedAt(snapshot.syncedAt);
-      setErrors(previous => { const next = { ...previous }; delete next.devices; delete next.stats; delete next.watchingNow; return next; });
-    }).catch(error => { if (revision === clientRevision.current) reportError(error, epoch, 'devices'); }).finally(() => {
-      if (generation.current !== epoch) return;
-      clientsInFlight.current = null; setLoading(false);
-    });
-    clientsInFlight.current = { generation: epoch, promise };
-    return promise;
+    if (!clientQueue.current) {
+      const epoch = generation.current;
+      clientQueue.current = createPanelSyncQueue({
+        read: getPanelSnapshot,
+        apply: snapshot => {
+          if (generation.current !== epoch) return;
+          clientsLoadedRef.current = true;
+          setData(previous => ({ ...previous, devices: snapshot.devices, stats: snapshot.stats, watchingNow: snapshot.watchingNow }));
+          setLoaded(previous => ({ ...previous, devices: true, stats: true, watchingNow: true }));
+          setLastSyncedAt(snapshot.syncedAt);
+          setErrors(previous => { const next = { ...previous }; delete next.devices; delete next.stats; delete next.watchingNow; return next; });
+        },
+        onError: error => reportError(error, epoch, 'devices'),
+        onIdle: () => { if (generation.current === epoch) setLoading(false); },
+      });
+    }
+    return clientQueue.current.request(force);
   }, [reportError]);
 
   const commitDeviceChange = useCallback((device: Device | null, removedIds: string[] = []) => {
@@ -104,48 +107,60 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
       const actualScope = (device as Device & { admin_id?: string | null }).admin_id ?? null;
       if (actualScope !== (identityRef.current.subAdmin?.id ?? null)) return;
     }
-    clientRevision.current += 1;
+    clientQueue.current?.invalidate();
     setData(previous => {
       const devices = applyConfirmedDeviceChange(previous.devices, device, removedIds);
       if (!clientsLoadedRef.current) return { ...previous, devices };
       const overview = buildConfirmedPanelOverview(devices, previous.stats?.plans ?? 0);
       return { ...previous, devices, stats: overview.stats, watchingNow: overview.watchingNow as WatchingDevice[] };
     });
-    metadataUpdatedAt.current = {};
+    for (const section of ['plans', 'sources', 'reps'] as SecondarySection[]) {
+      metadataUpdatedAt.current[section] = 0; metadataQueues.current[section]?.invalidate();
+    }
   }, []);
 
-  const loadSection: AdminPanelContextType['loadSection'] = useCallback((section, force = false): Promise<void> => {
+  const loadSection: AdminPanelContextType['loadSection'] = useCallback((section, force = false) => {
     if (!identityRef.current || (section === 'subAdmins' && identityRef.current.subAdmin)) return Promise.resolve();
-    const epoch = generation.current;
     requestedSections.current.add(section);
-    if (force) { metadataRevision.current[section] = (metadataRevision.current[section] ?? 0) + 1; metadataUpdatedAt.current[section] = 0; }
-    const pending = metadataInFlight.current[section];
-    if (pending?.generation === epoch) return force
-      ? pending.promise.then(() => generation.current === epoch ? loadSection(section) : undefined)
-      : pending.promise;
     const updatedAt = metadataUpdatedAt.current[section];
     if (!force && updatedAt && Date.now() - updatedAt < panelMetadataFreshnessMs) return Promise.resolve();
-    const revision = metadataRevision.current[section] ?? 0;
     setLoadingSections(previous => ({ ...previous, [section]: true }));
-    const promise = metadataLoaders[section]().then(value => {
-      if (generation.current !== epoch || revision !== (metadataRevision.current[section] ?? 0)) return;
-      setData(previous => ({ ...previous, [section]: value }));
-      setLoaded(previous => ({ ...previous, [section]: true }));
-      metadataUpdatedAt.current[section] = Date.now();
-      setErrors(previous => { const next = { ...previous }; delete next[section]; return next; });
-    }).catch(error => { if (revision === (metadataRevision.current[section] ?? 0)) reportError(error, epoch, section); }).finally(() => {
-      if (generation.current !== epoch) return;
-      delete metadataInFlight.current[section]; setLoadingSections(previous => ({ ...previous, [section]: false }));
-    });
-    metadataInFlight.current[section] = { generation: epoch, promise };
-    return promise;
+    let queue = metadataQueues.current[section];
+    if (!queue) {
+      const epoch = generation.current;
+      queue = createPanelSyncQueue({
+        read: fresh => metadataLoaders[section](fresh),
+        apply: value => {
+          if (generation.current !== epoch) return;
+          setData(previous => ({ ...previous, [section]: value }));
+          setLoaded(previous => ({ ...previous, [section]: true }));
+          metadataUpdatedAt.current[section] = Date.now();
+          setErrors(previous => { const next = { ...previous }; delete next[section]; return next; });
+        },
+        onError: error => reportError(error, epoch, section),
+        onIdle: () => { if (generation.current === epoch) setLoadingSections(previous => ({ ...previous, [section]: false })); },
+      });
+      metadataQueues.current[section] = queue;
+    }
+    if (force) metadataUpdatedAt.current[section] = 0;
+    return queue.request(force);
   }, [reportError]);
 
-  const loadAll = useCallback(async (silent = false): Promise<void> => {
+  const syncPanel = useCallback(async (silent = true, force = false): Promise<void> => {
     if (!identityRef.current) return;
-    await Promise.allSettled([syncClients(silent, true), ...Array.from(requestedSections.current).map(section => loadSection(section, true))]);
+    // Secondary tabs are refreshed automatically, but never hold the MAC polling cycle.
+    for (const section of requestedSections.current) void loadSection(section, force);
+    await syncClients(silent, force);
   }, [syncClients, loadSection]);
-  const loadWatching = useCallback(() => syncClients(true), [syncClients]);
+  useEffect(() => subscribePanelChanges(change => {
+    if (!identityRef.current || change.scopeKey !== getPanelScopeKey(getAdminAuthPayload())) return;
+    void syncClients(true, true);
+    for (const section of change.sections) {
+      if (section !== 'devices' && requestedSections.current.has(section)) void loadSection(section, true);
+    }
+  }), [syncClients, loadSection]);
+  const loadAll = useCallback((silent = false) => syncPanel(silent, true), [syncPanel]);
+  const loadWatching = useCallback(() => syncClients(true, true), [syncClients]);
   const login = useCallback(async (mode: 'root' | 'subadmin', password: string, username: string): Promise<string | null> => {
     if (loginInFlight.current) return 'Aguarde o login em andamento.';
     loginInFlight.current = true; reset();
@@ -156,15 +171,14 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
         const result = await subAdminLogin(username.trim(), password);
         if (generation.current !== epoch) return null;
         if (!result.ok || !result.admin || !result.sessionToken) throw new Error(result.error || 'Credenciais inválidas.');
-        setSubAdminCredentials(result.admin.id, result.sessionToken);
-        nextIdentity = { subAdmin: result.admin };
+        setSubAdminCredentials(result.admin.id, result.sessionToken); nextIdentity = { subAdmin: result.admin };
       } else {
         await rootAdminLogin(password);
         if (generation.current !== epoch) { clearAdminSession(); return null; }
         nextIdentity = { subAdmin: null };
       }
       identityRef.current = nextIdentity; setIdentity(nextIdentity);
-      void syncClients(); // Only authentication is awaited by the login form.
+      void syncClients(false, true);
       return null;
     } catch (error) {
       if (generation.current !== epoch) return null;
@@ -182,13 +196,27 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
   const syncError = useMemo(() => {
     const keys = Object.keys(errors) as Section[];
     if (!keys.length) return '';
-    return `Não foi possível atualizar: ${keys.map(key => labels[key]).join(', ')}. ${errors[keys[0]]}${loaded.devices ? ' A lista exibida é a última confirmada.' : ' Ainda não há uma lista confirmada.'}`;
+    return `Não foi possível atualizar: ${keys.map(key => labels[key]).join(', ')}. ${errors[keys[0]]} A sincronização tentará novamente automaticamente.${loaded.devices ? ' A lista exibida é a última confirmada.' : ' Ainda não há uma lista confirmada.'}`;
   }, [errors, loaded.devices]);
-  const value = useMemo<AdminPanelContextType>(() => ({ ...data, authenticated: identity !== null,
-    isSubAdmin: !!identity?.subAdmin, currentSubAdmin: identity?.subAdmin ?? null, loading, refreshing,
-    loaded, loadingSections, lastSyncedAt, syncError, accessError, login, syncClients, commitDeviceChange,
-    loadSection, loadAll, loadWatching, refresh, reset,
-  }), [data, identity, loading, refreshing, loaded, loadingSections, lastSyncedAt, syncError, accessError,
-    login, syncClients, commitDeviceChange, loadSection, loadAll, loadWatching, refresh, reset]);
+  const value = useMemo<AdminPanelContextType>(() => {
+    const planCounts = new Map<string, number>();
+    const sourceCounts = new Map<string, number>();
+    const repCounts = new Map<string, number>();
+    if (loaded.devices) for (const device of data.devices) {
+      if (!device.activated) continue;
+      if (device.plan_id) planCounts.set(device.plan_id, (planCounts.get(device.plan_id) ?? 0) + 1);
+      const sourceId = (device as Device & { source_id?: string }).source_id;
+      if (sourceId) sourceCounts.set(sourceId, (sourceCounts.get(sourceId) ?? 0) + 1);
+      if (device.rep_id) repCounts.set(device.rep_id, (repCounts.get(device.rep_id) ?? 0) + 1);
+    }
+    return { ...data,
+      plans: loaded.devices ? data.plans.map(plan => ({ ...plan, active_macs: planCounts.get(plan.id) ?? 0 })) : data.plans,
+      sources: loaded.devices ? data.sources.map(source => ({ ...source, active_macs: sourceCounts.get(source.id) ?? 0 })) : data.sources,
+      reps: loaded.devices ? data.reps.map(rep => ({ ...rep, active_devices: repCounts.get(rep.id) ?? 0 })) : data.reps,
+      authenticated: identity !== null, isSubAdmin: !!identity?.subAdmin, currentSubAdmin: identity?.subAdmin ?? null,
+      loading, refreshing, loaded, loadingSections, lastSyncedAt, syncError, accessError,
+      login, syncClients, syncPanel, commitDeviceChange, loadSection, loadAll, loadWatching, refresh, reset };
+  }, [data, identity, loading, refreshing, loaded, loadingSections, lastSyncedAt, syncError, accessError,
+    login, syncClients, syncPanel, commitDeviceChange, loadSection, loadAll, loadWatching, refresh, reset]);
   return <AdminPanelContext.Provider value={value}>{children}</AdminPanelContext.Provider>;
 }
