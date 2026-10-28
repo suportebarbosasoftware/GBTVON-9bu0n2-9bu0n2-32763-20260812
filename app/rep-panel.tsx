@@ -339,11 +339,11 @@ export default function RepPanelScreen() {
 
   async function handleBlock() {
     if (!selectedDevice) return;
-    setBlockModal(false);
+    if (actionLoading) return;
     setActionLoading(true);
     try {
       await blockRepDevice(selectedDevice.id, blockReason.trim() || 'Bloqueado pelo representante');
-      setBlockReason('');
+      setBlockModal(false); setBlockReason('');
     } catch (e: any) { showAlert('Erro', e.message); }
     setActionLoading(false);
   }
@@ -1305,11 +1305,11 @@ export default function RepPanelScreen() {
                     {/* Status */}
                     <View style={styles.detailRow}>
                       <View style={[styles.statusDot, {
-                        backgroundColor: isOnline(selectedDevice.last_seen_at) ? '#4CAF50' : selectedDevice.activated ? '#8BC34A' : selectedDevice.blocked_reason ? Colors.error : '#FF9800'
+                        backgroundColor: selectedDevice.blocked_reason ? Colors.error : isOnline(selectedDevice.last_seen_at) ? '#4CAF50' : selectedDevice.activated ? '#8BC34A' : '#FF9800'
                       }]} />
                       <Text style={styles.detailLabel}>Status</Text>
-                      <Text style={[styles.detailValue, { fontWeight: '700', color: isOnline(selectedDevice.last_seen_at) ? '#4CAF50' : selectedDevice.activated ? '#8BC34A' : selectedDevice.blocked_reason ? Colors.error : '#FF9800' }]}>
-                        {isOnline(selectedDevice.last_seen_at) ? 'ONLINE' : selectedDevice.activated ? 'ATIVO' : selectedDevice.blocked_reason ? 'BLOQUEADO' : 'INATIVO'}
+                      <Text style={[styles.detailValue, { fontWeight: '700', color: selectedDevice.blocked_reason ? Colors.error : isOnline(selectedDevice.last_seen_at) ? '#4CAF50' : selectedDevice.activated ? '#8BC34A' : '#FF9800' }]}>
+                        {selectedDevice.blocked_reason ? 'BLOQUEADO' : isOnline(selectedDevice.last_seen_at) ? 'ONLINE' : selectedDevice.activated ? 'ATIVO' : 'INATIVO'}
                       </Text>
                     </View>
 
@@ -1603,7 +1603,7 @@ export default function RepPanelScreen() {
       </Modal>
 
       {/* ── BLOCK REASON MODAL ── */}
-      <Modal visible={blockModal} transparent animationType="fade" onRequestClose={() => setBlockModal(false)}>
+      <Modal visible={blockModal} transparent animationType="fade" onRequestClose={() => !actionLoading && setBlockModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={[styles.modalBackdrop, { justifyContent: 'center' }]}>
             <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, paddingBottom: 20 }]}>
@@ -1634,12 +1634,12 @@ export default function RepPanelScreen() {
                 />
               </View>
               <View style={styles.modalActions}>
-                <Pressable style={[styles.modalActionBtn, { backgroundColor: 'rgba(255,255,255,0.07)', flex: 1 }]} onPress={() => setBlockModal(false)}>
+                <Pressable style={({ pressed }) => [styles.modalActionBtn, { backgroundColor: Colors.bg, flex: 1, opacity: pressed ? 0.65 : 1 }]} disabled={actionLoading} onPress={() => setBlockModal(false)}>
                   <Text style={[styles.modalActionText, { color: Colors.textSecondary }]}>Cancelar</Text>
                 </Pressable>
-                <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: Colors.error }]} onPress={handleBlock}>
-                  <Ionicons name="ban-outline" size={16} color="#fff" />
-                  <Text style={styles.modalActionText}> Confirmar</Text>
+                <Pressable style={({ pressed }) => [styles.modalActionBtn, { flex: 1, backgroundColor: Colors.error, opacity: pressed || actionLoading ? 0.65 : 1 }]} disabled={actionLoading} accessibilityLabel="Confirmar bloqueio do MAC" onPress={handleBlock}>
+                  {actionLoading ? <ActivityIndicator size="small" color={Colors.textPrimary} /> : <Ionicons name="ban-outline" size={16} color={Colors.textPrimary} />}
+                  <Text style={styles.modalActionText}>{actionLoading ? ' Bloqueando...' : ' Confirmar'}</Text>
                 </Pressable>
               </View>
             </View>

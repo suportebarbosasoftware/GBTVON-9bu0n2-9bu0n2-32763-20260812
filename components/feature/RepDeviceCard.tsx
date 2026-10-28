@@ -11,8 +11,8 @@ interface RepDeviceCardProps {
   onCopy: (mac: string) => void;
 }
 export const RepDeviceCard = memo(function RepDeviceCard({ device, online, onOpen, onCopy }: RepDeviceCardProps) {
-  const statusColor = online ? Colors.success : device.blocked_reason ? Colors.error : device.activated ? Colors.success : Colors.warning;
-  const status = online ? 'Online' : device.blocked_reason ? 'Bloqueado' : device.activated ? 'Ativo' : 'Pendente';
+  const statusColor = device.blocked_reason ? Colors.error : online ? Colors.success : device.activated ? Colors.success : Colors.warning;
+  const status = device.blocked_reason ? 'Bloqueado' : online ? 'Online' : device.activated ? 'Ativo' : 'Pendente';
   const expired = !!device.expires_at && new Date(device.expires_at).getTime() < Date.now();
   return (
     <Pressable

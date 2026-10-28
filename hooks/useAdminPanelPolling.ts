@@ -1,23 +1,32 @@
-import { useEffect } from 'react';
+import { useCallback } from 'react';
 import { AppState } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { clientSyncIntervalMs } from '@/constants/adminPanel';
 
-/** Only MAC snapshots are polled; metadata and background screens do not produce request bursts. */
+/** Only a visible, foreground panel polls; each cycle waits for the previous request to finish. */
 export function useAdminPanelPolling(authenticated: boolean, syncClients: (silent?: boolean) => Promise<void>): void {
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     if (!authenticated) return;
+    let disposed = false;
     let active = AppState.currentState !== 'background' && AppState.currentState !== 'inactive';
-    const interval = setInterval(() => {
-      if (active) void syncClients(true);
-    }, clientSyncIntervalMs);
+    let running = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      if (disposed || !active || running) return;
+      running = true;
+      try { await syncClients(true); }
+      finally {
+        running = false;
+        if (!disposed && active) timer = setTimeout(() => { void tick(); }, clientSyncIntervalMs);
+      }
+    };
+    timer = setTimeout(() => { void tick(); }, clientSyncIntervalMs);
     const subscription = AppState.addEventListener('change', state => {
       const wasActive = active;
       active = state === 'active';
-      if (active && !wasActive) void syncClients(true);
+      if (!active && timer) { clearTimeout(timer); timer = null; }
+      if (active && !wasActive) void tick();
     });
-    return () => {
-      clearInterval(interval);
-      subscription.remove();
-    };
-  }, [authenticated, syncClients]);
+    return () => { disposed = true; if (timer) clearTimeout(timer); subscription.remove(); };
+  }, [authenticated, syncClients]));
 }

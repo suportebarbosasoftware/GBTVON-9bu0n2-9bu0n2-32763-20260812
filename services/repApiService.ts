@@ -139,8 +139,15 @@ export async function removeCredits(repId: string, amount: number, description?:
   return { new_balance: data?.new_balance ?? 0 };
 }
 
-export async function updateRepDevicePrice(deviceId: string, price: number | null): Promise<void> {
-  await callRep('updateRepDevicePrice', { deviceId, price });
+function confirmedRepDevice(data: any, expectedId: string): RepDevice {
+  if (!data?.success || data.device?.id !== expectedId || data.device.rep_id !== _repId) {
+    throw new Error('O servidor não confirmou a alteração deste MAC. Atualize para conferir.');
+  }
+  return data.device;
+}
+
+export async function updateRepDevicePrice(deviceId: string, price: number | null): Promise<RepDevice> {
+  return confirmedRepDevice(await callRep('updateRepDevicePrice', { deviceId, price }), deviceId);
 }
 
 export async function getCreditTransactions(repId: string): Promise<CreditTransaction[]> {
@@ -269,30 +276,35 @@ export async function lookupDeviceByMac(mac: string): Promise<{ found: boolean; 
   }
 }
 
-export async function deactivateRepDevice(deviceId: string): Promise<void> {
-  await callRep('deactivateRepDevice', { deviceId });
+export async function deactivateRepDevice(deviceId: string): Promise<RepDevice> {
+  return confirmedRepDevice(await callRep('deactivateRepDevice', { deviceId }), deviceId);
 }
 
-export async function blockRepDevice(deviceId: string, reason?: string): Promise<void> {
-  await callRep('blockRepDevice', { deviceId, reason });
+export async function blockRepDevice(deviceId: string, reason?: string): Promise<RepDevice> {
+  return confirmedRepDevice(await callRep('blockRepDevice', { deviceId, reason }), deviceId);
 }
 
 /** Unblock a device — does NOT consume credits */
-export async function unblockRepDevice(deviceId: string): Promise<void> {
-  await callRep('unblockRepDevice', { deviceId });
+export async function unblockRepDevice(deviceId: string): Promise<RepDevice> {
+  return confirmedRepDevice(await callRep('unblockRepDevice', { deviceId }), deviceId);
 }
 
-export async function deleteRepDevice(deviceId: string): Promise<void> {
-  await callRep('deleteRepDevice', { deviceId });
+export async function deleteRepDevice(deviceId: string): Promise<string[]> {
+  const data = await callRep('deleteRepDevice', { deviceId });
+  if (!data?.success || !Array.isArray(data.removedIds) || data.removedIds.some((id: unknown) => id !== deviceId)) {
+    throw new Error('O servidor não confirmou a exclusão deste MAC. Atualize para conferir antes de repetir.');
+  }
+  return data.removedIds;
 }
 
 /**
  * Change the source assigned to a device — does NOT consume credits.
  * Only sources belonging to this representative are allowed.
  */
-export async function changeRepDeviceSource(deviceId: string, sourceId: string): Promise<{ source_name: string }> {
-  const data = await callRep('changeRepDeviceSource', { deviceId, sourceId });
-  return { source_name: data?.source_name ?? '' };
+export async function changeRepDeviceSource(deviceId: string, sourceId: string): Promise<{ source_name: string; device: RepDevice }> {
+  const device = confirmedRepDevice(await callRep('changeRepDeviceSource', { deviceId, sourceId }), deviceId);
+  if (device.source_id !== sourceId) throw new Error('A fonte solicitada não foi confirmada pelo servidor.');
+  return { source_name: device.sources?.name ?? '', device };
 }
 
 /**

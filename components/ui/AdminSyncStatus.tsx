@@ -29,6 +29,7 @@ export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, o
           <Text style={styles.updatedText}>Última sincronização dos MACs: {updatedTime}</Text>
         </View>
       ) : null}
+      {error ? <Text style={styles.message}>Se a falta de resposta persistir nos dois painéis, encaminhe os horários da falha ao suporte: contact@onspace.ai.</Text> : null}
       {error ? (
         <Pressable
           accessibilityRole="button" accessibilityLabel="Tentar atualizar o painel novamente"

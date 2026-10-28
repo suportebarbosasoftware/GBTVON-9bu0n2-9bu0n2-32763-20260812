@@ -136,28 +136,45 @@ export async function getDevices(): Promise<Device[]> {
   return devices || [];
 }
 
-export async function activateDevice(deviceId: string, planId: string): Promise<void> {
-  await call('activate_device', { deviceId, planId });
+function confirmedDevice(result: any, expectedId: string): Device {
+  if (!result?.success || result.device?.id !== expectedId) throw new Error('O servidor não confirmou a alteração deste cliente. Atualize para conferir.');
+  return result.device;
 }
 
-export async function deactivateDevice(deviceId: string): Promise<void> {
-  await call('deactivate_device', { deviceId });
+function confirmedRemovedIds(result: any): string[] {
+  if (!result?.success || !Array.isArray(result.removedIds) || result.removedIds.some((id: unknown) => typeof id !== 'string')) {
+    throw new Error('O servidor não confirmou a exclusão. Atualize para conferir antes de repetir.');
+  }
+  return result.removedIds;
 }
 
-export async function blockDevice(deviceId: string, reasonDetail?: string): Promise<void> {
-  await call('block_device', { deviceId, reasonDetail });
+export async function activateDevice(deviceId: string, planId: string): Promise<Device> {
+  return confirmedDevice(await call('activate_device', { deviceId, planId }), deviceId);
 }
 
-export async function deleteDevice(deviceId: string): Promise<void> {
-  await call('delete_device', { deviceId });
+/** Save all fields in one database write rather than four competing function calls. */
+export async function saveDevice(deviceId: string, payload: { planId: string; expiresAt: string | null; notes: string; price: number | null }): Promise<Device> {
+  return confirmedDevice(await call('save_device', { deviceId, ...payload }), deviceId);
 }
 
-export async function deleteDevicesBulk(deviceIds: string[]): Promise<void> {
-  await call('delete_devices_bulk', { deviceIds });
+export async function deactivateDevice(deviceId: string): Promise<Device> {
+  return confirmedDevice(await call('deactivate_device', { deviceId }), deviceId);
 }
 
-export async function deleteInactiveDevices(): Promise<void> {
-  await call('delete_inactive_devices');
+export async function blockDevice(deviceId: string, reasonDetail?: string): Promise<Device> {
+  return confirmedDevice(await call('block_device', { deviceId, reasonDetail }), deviceId);
+}
+
+export async function deleteDevice(deviceId: string): Promise<string[]> {
+  return confirmedRemovedIds(await call('delete_device', { deviceId }));
+}
+
+export async function deleteDevicesBulk(deviceIds: string[]): Promise<string[]> {
+  return confirmedRemovedIds(await call('delete_devices_bulk', { deviceIds }));
+}
+
+export async function deleteInactiveDevices(): Promise<string[]> {
+  return confirmedRemovedIds(await call('delete_inactive_devices'));
 }
 
 export async function updateDeviceNotes(deviceId: string, notes: string): Promise<void> {
@@ -172,8 +189,8 @@ export async function setDevicePrice(deviceId: string, price: number | null): Pr
   await call('set_device_price', { deviceId, price });
 }
 
-export async function grantGracePeriod(deviceId: string): Promise<void> {
-  await call('grant_grace_period', { deviceId });
+export async function grantGracePeriod(deviceId: string): Promise<Device> {
+  return confirmedDevice(await call('grant_grace_period', { deviceId }), deviceId);
 }
 
 // ── Plans ─────────────────────────────────────────────────

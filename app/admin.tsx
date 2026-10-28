@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput,
-  Modal, ActivityIndicator, Alert, Dimensions, KeyboardAvoidingView,
+  Modal, ActivityIndicator, Dimensions, KeyboardAvoidingView,
   Platform, RefreshControl,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -10,9 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
-  activateDevice, deactivateDevice, blockDevice, deleteDevice, deleteDevicesBulk,
-  deleteInactiveDevices, grantGracePeriod, updateDeviceNotes, setDeviceExpiry,
-  setDevicePrice, createPlan, updatePlan, deletePlan, preAuthorizeEmail,
+  createPlan, updatePlan, deletePlan, preAuthorizeEmail,
   sendNotification, deleteNotification,
   createSubAdmin, updateSubAdmin, deleteSubAdmin,
   Device, Plan, SubAdmin,
@@ -23,6 +21,8 @@ import {
   Representative, Source,
 } from '@/services/repApiService';
 import { useAdminPanel } from '@/hooks/useAdminPanel';
+import { useAdminPanelActions } from '@/hooks/useAdminPanelActions';
+import { useAlert } from '@/template';
 import { useAdminPanelPolling } from '@/hooks/useAdminPanelPolling';
 import { AdminSyncStatus } from '@/components/ui/AdminSyncStatus';
 
@@ -73,6 +73,9 @@ function isoToDisplay(iso: string | null | undefined): string {
 export default function AdminScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { showAlert } = useAlert();
+  const { saveDevice, deactivateDevice, blockDevice, deleteDevice, deleteDevicesBulk,
+    deleteInactiveDevices, grantGracePeriod } = useAdminPanelActions();
 
   const {
     authenticated, isSubAdmin, currentSubAdmin, loading, refreshing,
@@ -157,6 +160,15 @@ export default function AdminScreen() {
 
   useAdminPanelPolling(authenticated, syncClients);
 
+  useEffect(() => {
+    if (!authenticated) {
+      setSelectedDevice(null); setDeviceModal(false); setBlockReasonModal(false);
+      pendingBlockRef.current = false;
+      return;
+    }
+    setSelectedDevice(previous => previous ? devices.find(device => device.id === previous.id) ?? previous : null);
+  }, [authenticated, devices]);
+
   // Android fix: open blockReasonModal only after deviceModal is fully closed
   useEffect(() => {
     if (!deviceModal && pendingBlockRef.current) {
@@ -205,16 +217,15 @@ export default function AdminScreen() {
 
   async function handleBulkDelete() {
     if (selectedIds.size === 0) return;
-    Alert.alert('Excluir selecionados', `Excluir ${selectedIds.size} dispositivo(s)?`, [
+    showAlert('Excluir selecionados', `Excluir ${selectedIds.size} dispositivo(s)?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => {
         setBulkDeleteLoading(true);
         try {
           await deleteDevicesBulk(Array.from(selectedIds));
           setSelectMode(false); setSelectedIds(new Set());
-          await loadAll(true);
-          Alert.alert('Pronto', `${selectedIds.size} dispositivo(s) excluídos.`);
-        } catch (err: any) { Alert.alert('Erro', err.message); }
+          showAlert('Pronto', `${selectedIds.size} dispositivo(s) excluídos.`);
+        } catch (err: any) { showAlert('Erro', err.message); }
         setBulkDeleteLoading(false);
       }}
     ]);
@@ -230,48 +241,41 @@ export default function AdminScreen() {
   }
 
   async function handleSaveDevice() {
-    if (!selectedDevice || !selectedPlanId) { Alert.alert('Selecione um plano'); return; }
+    if (!selectedDevice || !selectedPlanId) { showAlert('Selecione um plano'); return; }
     let expiresAt: string | null = null;
     if (deviceExpiryInput.trim()) {
       expiresAt = parseDateInput(deviceExpiryInput.trim());
-      if (!expiresAt) { Alert.alert('Data inválida', 'Use o formato DD/MM/AAAA'); return; }
+      if (!expiresAt) { showAlert('Data inválida', 'Use o formato DD/MM/AAAA'); return; }
     }
-    const price = devicePriceInput.trim() ? parseFloat(devicePriceInput.trim()) : null;
+    const price = devicePriceInput.trim() ? Number(devicePriceInput.trim().replace(',', '.')) : null;
     setDeviceActionLoading(true);
     try {
-      const actions: Promise<any>[] = [
-        activateDevice(selectedDevice.id, selectedPlanId),
-        setDeviceExpiry(selectedDevice.id, expiresAt),
-        updateDeviceNotes(selectedDevice.id, deviceNotesInput),
-      ];
-      if (devicePriceInput !== (selectedDevice.price != null ? String(selectedDevice.price) : '')) {
-        actions.push(setDevicePrice(selectedDevice.id, price) as any);
-      }
-      await Promise.all(actions);
+      if (price !== null && (!Number.isFinite(price) || price < 0)) throw new Error('Valor inválido');
+      await saveDevice(selectedDevice.id, { planId: selectedPlanId, expiresAt, notes: deviceNotesInput, price });
       setDeviceModal(false);
-      await loadAll(true);
-    } catch (err: any) { Alert.alert('Erro ao salvar', err.message); }
+    } catch (err: any) { showAlert('Erro ao salvar', err.message); }
     setDeviceActionLoading(false);
   }
 
   async function handleConfirmBlock() {
     if (!selectedDevice) return;
-    setBlockReasonModal(false); setDeviceActionLoading(true);
+    if (deviceActionLoading) return;
+    setDeviceActionLoading(true);
     try {
       await blockDevice(selectedDevice.id, blockReasonInput.trim() || undefined);
-      setDeviceModal(false); await loadAll(true);
-    } catch (err: any) { Alert.alert('Erro ao bloquear', err.message); }
+      setBlockReasonModal(false); setDeviceModal(false);
+    } catch (err: any) { showAlert('Erro ao bloquear', err.message); }
     setDeviceActionLoading(false);
   }
 
   async function handleDeactivateDevice() {
     if (!selectedDevice) return;
-    Alert.alert('Desativar', `Desativar ${selectedDevice.email}?`, [
+    showAlert('Desativar', `Desativar ${selectedDevice.email}?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Desativar', style: 'destructive', onPress: async () => {
         setDeviceActionLoading(true);
-        try { await deactivateDevice(selectedDevice.id); setDeviceModal(false); await loadAll(true); }
-        catch (err: any) { Alert.alert('Erro', err.message); }
+        try { await deactivateDevice(selectedDevice.id); setDeviceModal(false); }
+        catch (err: any) { showAlert('Erro', err.message); }
         setDeviceActionLoading(false);
       }}
     ]);
@@ -279,35 +283,35 @@ export default function AdminScreen() {
 
   async function handleDeleteDevice() {
     if (!selectedDevice) return;
-    Alert.alert('Excluir dispositivo', `Remover ${selectedDevice.email}?`, [
+    showAlert('Excluir dispositivo', `Remover ${selectedDevice.email}?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: async () => {
         setDeviceActionLoading(true);
-        try { await deleteDevice(selectedDevice.id); setDeviceModal(false); await loadAll(true); }
-        catch (err: any) { Alert.alert('Erro', err.message); }
+        try { await deleteDevice(selectedDevice.id); setDeviceModal(false); }
+        catch (err: any) { showAlert('Erro', err.message); }
         setDeviceActionLoading(false);
       }}
     ]);
   }
 
   async function handleDeleteInactive() {
-    Alert.alert('Excluir pendentes', 'Remover todos os dispositivos nunca ativados?', [
+    showAlert('Excluir pendentes', 'Remover todos os dispositivos nunca ativados?', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir todos', style: 'destructive', onPress: async () => {
-        try { await deleteInactiveDevices(); Alert.alert('Pronto', 'Removidos!'); await loadAll(true); }
-        catch (err: any) { Alert.alert('Erro', err.message); }
+        try { await deleteInactiveDevices(); showAlert('Pronto', 'Removidos!'); }
+        catch (err: any) { showAlert('Erro', err.message); }
       }}
     ]);
   }
 
   async function handleGrantGrace() {
     if (!selectedDevice) return;
-    Alert.alert('Conceder 3 dias', `Liberar 3 dias para ${selectedDevice.email}?`, [
+    showAlert('Conceder 3 dias', `Liberar 3 dias para ${selectedDevice.email}?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Conceder', onPress: async () => {
         setDeviceActionLoading(true);
-        try { await grantGracePeriod(selectedDevice.id); setDeviceModal(false); await loadAll(true); Alert.alert('Pronto', '3 dias concedidos!'); }
-        catch (err: any) { Alert.alert('Erro', err.message); }
+        try { await grantGracePeriod(selectedDevice.id); setDeviceModal(false); showAlert('Pronto', '3 dias concedidos!'); }
+        catch (err: any) { showAlert('Erro', err.message); }
         setDeviceActionLoading(false);
       }}
     ]);
@@ -317,7 +321,7 @@ export default function AdminScreen() {
   function openEditPlan(plan: Plan) { setEditingPlan(plan); setPlanForm({ name: plan.name, server_url: plan.server_url, xtream_username: plan.xtream_username, xtream_password: plan.xtream_password, max_macs: String(plan.max_macs), notes: plan.notes || '' }); setPlanModal(true); }
 
   async function handleSavePlan() {
-    if (!planForm.name || !planForm.server_url || !planForm.xtream_username || !planForm.xtream_password) { Alert.alert('Preencha todos os campos obrigatórios'); return; }
+    if (!planForm.name || !planForm.server_url || !planForm.xtream_username || !planForm.xtream_password) { showAlert('Preencha todos os campos obrigatórios'); return; }
     setPlanFormLoading(true);
     try {
       if (editingPlan) {
@@ -325,40 +329,40 @@ export default function AdminScreen() {
       } else {
         await createPlan({ name: planForm.name, server_url: planForm.server_url, xtream_username: planForm.xtream_username, xtream_password: planForm.xtream_password, max_macs: parseInt(planForm.max_macs) || 5, notes: planForm.notes });
       }
-      setPlanModal(false); await loadAll(true);
-    } catch (err: any) { Alert.alert('Erro', err.message); }
+      setPlanModal(false); void loadAll(true);
+    } catch (err: any) { showAlert('Erro', err.message); }
     setPlanFormLoading(false);
   }
 
   async function handleDeletePlan(plan: Plan) {
-    Alert.alert('Excluir Plano', `Excluir "${plan.name}"?`, [
+    showAlert('Excluir Plano', `Excluir "${plan.name}"?`, [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deletePlan(plan.id); await loadAll(true); } catch (err: any) { Alert.alert('Erro', err.message); } } }
+      { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deletePlan(plan.id); void loadAll(true); } catch (err: any) { showAlert('Erro', err.message); } } }
     ]);
   }
 
   async function handleDeleteNotification(notificationId: string) {
-    try { await deleteNotification(notificationId); await loadAll(true); } catch (err: any) { Alert.alert('Erro ao excluir', err.message); }
+    try { await deleteNotification(notificationId); void loadAll(true); } catch (err: any) { showAlert('Erro ao excluir', err.message); }
   }
 
   async function handleSendNotification() {
-    if (!notifForm.title || !notifForm.message) { Alert.alert('Preencha título e mensagem'); return; }
+    if (!notifForm.title || !notifForm.message) { showAlert('Preencha título e mensagem'); return; }
     setNotifLoading(true);
     try {
       await sendNotification({ title: notifForm.title, message: notifForm.message, targetEmail: notifForm.isBroadcast ? undefined : notifForm.targetEmail || undefined });
-      Alert.alert('Aviso enviado!'); setNotifModal(false); setNotifForm({ title: '', message: '', targetEmail: '', isBroadcast: true }); await loadAll(true);
-    } catch (err: any) { Alert.alert('Erro', err.message); }
+      showAlert('Aviso enviado!'); setNotifModal(false); setNotifForm({ title: '', message: '', targetEmail: '', isBroadcast: true }); void loadAll(true);
+    } catch (err: any) { showAlert('Erro', err.message); }
     setNotifLoading(false);
   }
 
   async function handlePreAuthorize() {
-    if (!preAuthEmail || !preAuthMac || !preAuthPlanId) { Alert.alert('Preencha todos os campos'); return; }
+    if (!preAuthEmail || !preAuthMac || !preAuthPlanId) { showAlert('Preencha todos os campos'); return; }
     setPreAuthLoading(true);
     try {
       await preAuthorizeEmail(preAuthEmail, preAuthPlanId, preAuthMac);
-      Alert.alert('Sucesso', `${preAuthEmail} pré-autorizado!`);
-      setPreAuthEmail(''); setPreAuthMac(''); setPreAuthPlanId(''); await loadAll(true);
-    } catch (err: any) { Alert.alert('Erro', err.message); }
+      showAlert('Sucesso', `${preAuthEmail} pré-autorizado!`);
+      setPreAuthEmail(''); setPreAuthMac(''); setPreAuthPlanId(''); void loadAll(true);
+    } catch (err: any) { showAlert('Erro', err.message); }
     setPreAuthLoading(false);
   }
 
@@ -663,15 +667,15 @@ export default function AdminScreen() {
                         {selectMode && <View style={styles.checkboxWrap}><Ionicons name={isSelected ? 'checkbox' : 'square-outline'} size={20} color={isSelected ? Colors.primary : Colors.textMuted} /></View>}
                         <View style={{ flex: 1 }}>
                           <View style={styles.deviceCardHeader}>
-                            <View style={[styles.statusIndicator, { backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]} />
+                            <View style={[styles.statusIndicator, { backgroundColor: d.blocked_reason ? Colors.error : isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : '#FF9800' }]} />
                             <View style={{ flex: 1 }}>
                               {d.client_name ? <Text style={[styles.deviceCardEmail, { fontWeight: '800' }]} numberOfLines={1}>{d.client_name}</Text> : null}
                               <Text style={d.client_name ? [styles.deviceCardMac, { color: 'rgba(255,255,255,0.6)', fontSize: 11 }] : styles.deviceCardEmail} numberOfLines={1}>{d.email}</Text>
                               <Text style={styles.deviceCardMac}>{d.mac_address}</Text>
                             </View>
                             <View style={styles.deviceCardRight}>
-                              <Text style={[styles.deviceCardStatus, { color: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800' }]}>
-                                {isOnline(d.last_seen_at) ? 'ONLINE' : d.activated ? 'ATIVO' : d.blocked_reason === 'manual' ? 'BLOQUEADO' : d.blocked_reason === 'expired' ? 'EXPIRADO' : 'PENDENTE'}
+                              <Text style={[styles.deviceCardStatus, { color: d.blocked_reason ? Colors.error : isOnline(d.last_seen_at) ? '#4CAF50' : d.activated ? '#8BC34A' : '#FF9800' }]}>
+                                {d.blocked_reason === 'manual' ? 'BLOQUEADO' : d.blocked_reason === 'expired' ? 'EXPIRADO' : isOnline(d.last_seen_at) ? 'ONLINE' : d.activated ? 'ATIVO' : 'PENDENTE'}
                               </Text>
                               {d.plans ? <Text style={styles.deviceCardPlan} numberOfLines={1}>{d.plans.name}</Text> : null}
                             </View>
@@ -754,7 +758,7 @@ export default function AdminScreen() {
                   <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(255,215,0,0.3)' }]} onPress={() => { setCreditsRep(r); setCreditsInput(''); setCreditsDescription(''); setCreditsMode('add'); setCreditsModal(true); }}>
                     <Ionicons name="wallet-outline" size={16} color="#FFD700" /><Text style={[styles.planActionText, { color: '#FFD700' }]}>Créditos</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir', `Excluir ${r.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteRepresentative(r.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir', `Excluir ${r.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteRepresentative(r.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                     <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                   </Pressable>
                 </View>
@@ -837,7 +841,7 @@ export default function AdminScreen() {
                           <Pressable style={styles.planActionBtn} onPress={() => { setEditingSource(s); setSourceForm({ name: s.name, server_url: s.server_url, xtream_username: s.xtream_username, xtream_password: s.xtream_password, max_connections: String(s.max_connections), rep_id: s.rep_id || '', notes: s.notes || '' }); setSourceModal(true); }}>
                             <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
                           </Pressable>
-                          <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
+                          <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Fonte', `Excluir "${s.name}"?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSource(s.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                             <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                           </Pressable>
                         </View>
@@ -1069,10 +1073,10 @@ export default function AdminScreen() {
                   <Pressable style={styles.planActionBtn} onPress={() => { setEditingSubAdmin(sa); setSubAdminForm({ username: sa.username, password: '', name: sa.name, notes: sa.notes || '' }); setSubAdminModal(true); }}>
                     <Ionicons name="create-outline" size={16} color={Colors.primary} /><Text style={[styles.planActionText, { color: Colors.primary }]}>Editar</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: sa.active ? 'rgba(255,152,0,0.3)' : 'rgba(76,175,80,0.3)' }]} onPress={async () => { try { await updateSubAdmin(sa.id, { active: !sa.active }); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } }}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: sa.active ? 'rgba(255,152,0,0.3)' : 'rgba(76,175,80,0.3)' }]} onPress={async () => { try { await updateSubAdmin(sa.id, { active: !sa.active }); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } }}>
                     <Ionicons name={sa.active ? 'pause-circle-outline' : 'play-circle-outline'} size={16} color={sa.active ? '#FF9800' : '#4CAF50'} /><Text style={[styles.planActionText, { color: sa.active ? '#FF9800' : '#4CAF50' }]}>{sa.active ? 'Suspender' : 'Ativar'}</Text>
                   </Pressable>
-                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => Alert.alert('Excluir Sub-Admin', `Excluir ${sa.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSubAdmin(sa.id); await loadAll(true); } catch (e: any) { Alert.alert('Erro', e.message); } } }])}>
+                  <Pressable style={[styles.planActionBtn, { borderColor: 'rgba(244,67,54,0.3)' }]} onPress={() => showAlert('Excluir Sub-Admin', `Excluir ${sa.name}?`, [{ text: 'Cancelar', style: 'cancel' }, { text: 'Excluir', style: 'destructive', onPress: async () => { try { await deleteSubAdmin(sa.id); void loadAll(true); } catch (e: any) { showAlert('Erro', e.message); } } }])}>
                     <Ionicons name="trash-outline" size={16} color={Colors.error} /><Text style={[styles.planActionText, { color: Colors.error }]}>Excluir</Text>
                   </Pressable>
                 </View>
@@ -1198,7 +1202,7 @@ export default function AdminScreen() {
       </Modal>
 
       {/* ── BLOCK REASON MODAL ── */}
-      <Modal visible={blockReasonModal} transparent animationType="fade" onRequestClose={() => setBlockReasonModal(false)}>
+      <Modal visible={blockReasonModal} transparent animationType="fade" onRequestClose={() => !deviceActionLoading && setBlockReasonModal(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdropFlex}>
           <View style={[styles.modalBackdrop, { justifyContent: 'center' }]}>
             <View style={[styles.modalSheet, { borderRadius: 16, height: undefined, maxHeight: '80%', paddingBottom: 20 }]}>
@@ -1216,8 +1220,8 @@ export default function AdminScreen() {
               </ScrollView>
               <View style={styles.inputWrap}><Ionicons name="create-outline" size={16} color={Colors.textMuted} /><TextInput style={styles.input} placeholder="Ou escreva o motivo..." placeholderTextColor={Colors.textMuted} value={blockReasonInput} onChangeText={setBlockReasonInput} /></View>
               <View style={[styles.modalActions, { marginTop: 12 }]}>
-                <Pressable style={styles.modalCancelBtn} onPress={() => setBlockReasonModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
-                <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: Colors.error }]} onPress={handleConfirmBlock}><Ionicons name="ban-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Confirmar</Text></Pressable>
+                <Pressable style={({ pressed }) => [styles.modalCancelBtn, pressed ? { opacity: 0.65 } : null]} disabled={deviceActionLoading} onPress={() => setBlockReasonModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
+                <Pressable style={({ pressed }) => [styles.modalActionBtn, { flex: 1, backgroundColor: Colors.error, opacity: pressed || deviceActionLoading ? 0.65 : 1 }]} disabled={deviceActionLoading} accessibilityLabel="Confirmar bloqueio do MAC" onPress={handleConfirmBlock}>{deviceActionLoading ? <ActivityIndicator color={Colors.textPrimary} size="small" /> : <Ionicons name="ban-outline" size={16} color={Colors.textPrimary} />}<Text style={styles.modalActionText}>{deviceActionLoading ? ' Bloqueando...' : ' Confirmar'}</Text></Pressable>
               </View>
             </View>
           </View>
@@ -1280,14 +1284,14 @@ export default function AdminScreen() {
                 <View style={styles.modalActions}>
                   <Pressable style={styles.modalCancelBtn} onPress={() => setRepModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
                   <Pressable style={[styles.modalActionBtn, { flex: 1 }]} onPress={async () => {
-                    if (!repForm.name || !repForm.rep_number) { Alert.alert('Preencha nome e número'); return; }
-                    if (!editingRep && !repForm.password) { Alert.alert('Senha obrigatória'); return; }
+                    if (!repForm.name || !repForm.rep_number) { showAlert('Preencha nome e número'); return; }
+                    if (!editingRep && !repForm.password) { showAlert('Senha obrigatória'); return; }
                     setRepFormLoading(true);
                     try {
                       if (editingRep) { await updateRepresentative(editingRep.id, { name: repForm.name, password: repForm.password || undefined, notes: repForm.notes }); }
                       else { await createRepresentative({ name: repForm.name, rep_number: repForm.rep_number, password: repForm.password, credits: parseInt(repForm.credits) || 0, notes: repForm.notes }); }
-                      setRepModal(false); await loadAll(true);
-                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                      setRepModal(false); void loadAll(true);
+                    } catch (e: any) { showAlert('Erro', e.message); }
                     setRepFormLoading(false);
                   }} disabled={repFormLoading}>
                     {repFormLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.modalActionText}>{editingRep ? 'Salvar' : 'Criar'}</Text>}
@@ -1372,25 +1376,25 @@ export default function AdminScreen() {
                   style={[styles.modalActionBtn, { flex: 1, backgroundColor: creditsMode === 'add' ? '#4CAF50' : Colors.error }, creditsLoading && { opacity: 0.6 }]}
                   onPress={async () => {
                     const amount = parseInt(creditsInput);
-                    if (!amount || amount < 1) { Alert.alert('Valor inválido', 'Digite uma quantidade maior que zero'); return; }
+                    if (!amount || amount < 1) { showAlert('Valor inválido', 'Digite uma quantidade maior que zero'); return; }
                     if (creditsMode === 'remove' && amount > (creditsRep?.credits ?? 0)) {
-                      Alert.alert('Saldo insuficiente', `O representante tem apenas ${creditsRep?.credits ?? 0} crédito(s).`);
+                      showAlert('Saldo insuficiente', `O representante tem apenas ${creditsRep?.credits ?? 0} crédito(s).`);
                       return;
                     }
                     setCreditsLoading(true);
                     try {
                       if (creditsMode === 'add') {
                         await addCredits(creditsRep!.id, amount, creditsDescription.trim() || undefined);
-                        Alert.alert('Pronto', `${amount} crédito(s) adicionados!`);
+                        showAlert('Pronto', `${amount} crédito(s) adicionados!`);
                       } else {
                         await removeCredits(creditsRep!.id, amount, creditsDescription.trim() || undefined);
-                        Alert.alert('Pronto', `${amount} crédito(s) removidos!`);
+                        showAlert('Pronto', `${amount} crédito(s) removidos!`);
                       }
                       setCreditsModal(false);
                       setCreditsInput('');
                       setCreditsDescription('');
-                      await loadAll(true);
-                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                      void loadAll(true);
+                    } catch (e: any) { showAlert('Erro', e.message); }
                     setCreditsLoading(false);
                   }}
                   disabled={creditsLoading}
@@ -1437,8 +1441,8 @@ export default function AdminScreen() {
                 <View style={styles.modalActions}>
                   <Pressable style={styles.modalCancelBtn} onPress={() => setSubAdminModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
                   <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#1565C0' }]} onPress={async () => {
-                    if (!subAdminForm.name) { Alert.alert('Nome obrigatório'); return; }
-                    if (!editingSubAdmin && (!subAdminForm.username || !subAdminForm.password)) { Alert.alert('Usuário e senha obrigatórios'); return; }
+                    if (!subAdminForm.name) { showAlert('Nome obrigatório'); return; }
+                    if (!editingSubAdmin && (!subAdminForm.username || !subAdminForm.password)) { showAlert('Usuário e senha obrigatórios'); return; }
                     setSubAdminFormLoading(true);
                     try {
                       if (editingSubAdmin) {
@@ -1447,8 +1451,8 @@ export default function AdminScreen() {
                         await createSubAdmin({ username: subAdminForm.username, password: subAdminForm.password, name: subAdminForm.name, notes: subAdminForm.notes || undefined });
                       }
                       setSubAdminModal(false);
-                      await loadAll(true);
-                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                      void loadAll(true);
+                    } catch (e: any) { showAlert('Erro', e.message); }
                     setSubAdminFormLoading(false);
                   }} disabled={subAdminFormLoading}>
                     {subAdminFormLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.modalActionText}>{editingSubAdmin ? 'Salvar' : 'Criar Sub-Admin'}</Text>}
@@ -1491,13 +1495,13 @@ export default function AdminScreen() {
                 <View style={styles.modalActions}>
                   <Pressable style={styles.modalCancelBtn} onPress={() => setSourceModal(false)}><Text style={styles.modalCancelText}>Cancelar</Text></Pressable>
                   <Pressable style={[styles.modalActionBtn, { flex: 1 }]} onPress={async () => {
-                    if (!sourceForm.name || !sourceForm.server_url || !sourceForm.xtream_username || !sourceForm.xtream_password) { Alert.alert('Campos obrigatórios faltando'); return; }
+                    if (!sourceForm.name || !sourceForm.server_url || !sourceForm.xtream_username || !sourceForm.xtream_password) { showAlert('Campos obrigatórios faltando'); return; }
                     setSourceFormLoading(true);
                     try {
                       if (editingSource) { await updateSource(editingSource.id, { name: sourceForm.name, server_url: sourceForm.server_url, xtream_username: sourceForm.xtream_username, xtream_password: sourceForm.xtream_password, max_connections: parseInt(sourceForm.max_connections) || 5, rep_id: sourceForm.rep_id || null, notes: sourceForm.notes || null } as any); }
                       else { await createSource({ name: sourceForm.name, server_url: sourceForm.server_url, xtream_username: sourceForm.xtream_username, xtream_password: sourceForm.xtream_password, max_connections: parseInt(sourceForm.max_connections) || 5, rep_id: sourceForm.rep_id || null, notes: sourceForm.notes }); }
-                      setSourceModal(false); await loadAll(true);
-                    } catch (e: any) { Alert.alert('Erro', e.message); }
+                      setSourceModal(false); void loadAll(true);
+                    } catch (e: any) { showAlert('Erro', e.message); }
                     setSourceFormLoading(false);
                   }} disabled={sourceFormLoading}>
                     {sourceFormLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.modalActionText}>{editingSource ? 'Salvar' : 'Criar Fonte'}</Text>}
