@@ -4,13 +4,14 @@
  * Rep actions authenticate with repId + repPassword (NOT admin password).
  * Admin-only actions still use adminPassword via setRepAdminPassword().
  */
-import { getSupabaseClient } from '@/template';
-import { FunctionsHttpError } from '@supabase/supabase-js';
-
-// Admin password — used only for admin-side rep management (addCredits, create, etc.)
-let _adminPassword = '';
-export function setRepAdminPassword(pw: string) { _adminPassword = pw; }
-export function getRepAdminPassword() { return _adminPassword; }
+import { invokeAdminApi } from '@/services/adminTransportService';
+import { getAdminAuthPayload } from '@/services/adminSessionService';
+export {
+  setAdminPassword as setRepAdminPassword,
+  getAdminPassword as getRepAdminPassword,
+  setSubAdminCredentials as setRepSubAdminCredentials,
+  clearSubAdminCredentials as clearRepSubAdminCredentials,
+} from '@/services/adminSessionService';
 
 // Rep credentials — stored after successful login for all rep actions
 let _repId = '';
@@ -91,68 +92,17 @@ export interface RepDevice {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Sub-admin session token — mirrored from adminApiService when sub-admin logs in
-// Stores the TOKEN (not password) issued by server
-let _subAdminId = '';
-let _subAdminToken = '';
-export function setRepSubAdminCredentials(id: string, token: string) {
-  _subAdminId = id;
-  _subAdminToken = token;
-}
-export function clearRepSubAdminCredentials() {
-  _subAdminId = '';
-  _subAdminToken = '';
-}
-
 async function callAdmin(action: string, payload?: Record<string, any>): Promise<any> {
-  const supabase = getSupabaseClient();
-  // Sub-admins send sessionToken (not password); root admin sends adminPassword
-  const authPayload = _subAdminId
-    ? { adminId: _subAdminId, sessionToken: _subAdminToken }
-    : { adminPassword: _adminPassword };
-  const { data, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, ...authPayload, ...payload },
-  });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { msg = await error.context.text(); } catch {}
-    }
-    throw new Error(msg);
-  }
-  return data;
+  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() });
 }
 
-/** Call an action authenticated by rep credentials (repId + repPassword) */
+/** Representative authentication remains independent from the administrative session. */
 async function callRep(action: string, payload?: Record<string, any>): Promise<any> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, repId: _repId, repPassword: _repPassword, ...payload },
-  });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { msg = await error.context.text(); } catch {}
-    }
-    throw new Error(msg);
-  }
-  return data;
+  return invokeAdminApi({ ...payload, action, repId: _repId, repPassword: _repPassword });
 }
 
-/** Public call — no auth required */
 async function callPublic(action: string, payload?: Record<string, any>): Promise<any> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, ...payload },
-  });
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try { msg = await error.context.text(); } catch {}
-    }
-    throw new Error(msg);
-  }
-  return data;
+  return invokeAdminApi({ ...payload, action });
 }
 
 // ─── Representatives (admin) ──────────────────────────────────────────────────

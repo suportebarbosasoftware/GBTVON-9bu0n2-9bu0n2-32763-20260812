@@ -3,24 +3,9 @@
  * All admin panel operations via the admin-api Edge Function.
  */
 import { getSupabaseClient } from '@/template';
-import { FunctionsHttpError } from '@supabase/supabase-js';
-
-// Password is set at runtime by the admin UI — never stored in source code
-let _adminPassword = '';
-export function setAdminPassword(pwd: string) { _adminPassword = pwd; }
-
-// Sub-admin session — stores session token (NOT password) issued by server at login
-let _subAdminId = '';
-let _subAdminToken = '';
-export function setSubAdminCredentials(id: string, token: string) {
-  _subAdminId = id;
-  _subAdminToken = token;
-}
-export function clearSubAdminCredentials() {
-  _subAdminId = '';
-  _subAdminToken = '';
-}
-export function isSubAdminSession() { return !!_subAdminId; }
+import { invokeAdminApi } from '@/services/adminTransportService';
+import { getAdminAuthPayload, setRootAdminSession } from '@/services/adminSessionService';
+export { setAdminPassword, setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession } from '@/services/adminSessionService';
 
 export interface SubAdmin {
   id: string;
@@ -115,37 +100,17 @@ export interface WatchingDevice {
 }
 
 async function call(action: string, data?: object): Promise<any> {
-  const supabase = getSupabaseClient();
-  // Sub-admins: send adminId + sessionToken (token issued at login, never the raw password)
-  // Root admin: send adminPassword (env-var secret, never stored in app source)
-  const authPayload = _subAdminId
-    ? { adminId: _subAdminId, sessionToken: _subAdminToken }
-    : { adminPassword: _adminPassword };
-  const { data: result, error } = await supabase.functions.invoke('admin-api', {
-    body: { action, ...authPayload, data },
-  });
+  return invokeAdminApi({ action, data, ...getAdminAuthPayload() });
+}
 
-  if (error) {
-    let msg = error.message;
-    if (error instanceof FunctionsHttpError) {
-      try {
-        const statusCode = error.context?.status ?? 500;
-        const text = await error.context?.text();
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          msg = parsed?.error || text || msg;
-        } catch {
-          msg = text || msg;
-        }
-        msg = `[${statusCode}] ${msg}`;
-      } catch {
-        msg = error.message;
-      }
-    }
-    throw new Error(msg);
-  }
+async function callFlat(action: string, payload: Record<string, unknown> = {}): Promise<any> {
+  return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() });
+}
 
-  return result;
+export async function rootAdminLogin(password: string): Promise<void> {
+  const result = await invokeAdminApi({ action: 'rootAdminLogin', password });
+  if (!result.ok || !result.rootSessionToken) throw new Error(result.error || 'Não foi possível iniciar a sessão administrativa.');
+  setRootAdminSession(result.rootSessionToken);
 }
 
 // ── Devices ──────────────────────────────────────────────
@@ -258,42 +223,26 @@ export async function preAuthorizeEmail(email: string, planId: string, macAddres
 
 // ── Sub-admin management (root admin only) ────────────────────
 export async function getSubAdmins(): Promise<SubAdmin[]> {
-  const supabase = getSupabaseClient();
-  const { data: result } = await supabase.functions.invoke('admin-api', {
-    body: { action: 'getSubAdmins', adminPassword: _adminPassword },
-  });
-  return result?.admins || [];
+  const result = await callFlat('getSubAdmins');
+  return result.admins || [];
 }
 
 export async function createSubAdmin(params: { username: string; password: string; name: string; notes?: string }): Promise<SubAdmin> {
-  const supabase = getSupabaseClient();
-  const { data: result } = await supabase.functions.invoke('admin-api', {
-    body: { action: 'createSubAdmin', adminPassword: _adminPassword, ...params },
-  });
-  return result?.admin;
+  const result = await callFlat('createSubAdmin', params);
+  return result.admin;
 }
 
 export async function updateSubAdmin(id: string, updates: { name?: string; password?: string; active?: boolean; notes?: string }): Promise<void> {
-  const supabase = getSupabaseClient();
-  await supabase.functions.invoke('admin-api', {
-    body: { action: 'updateSubAdmin', adminPassword: _adminPassword, id, ...updates },
-  });
+  await callFlat('updateSubAdmin', { id, ...updates });
 }
 
 export async function deleteSubAdmin(id: string): Promise<void> {
-  const supabase = getSupabaseClient();
-  await supabase.functions.invoke('admin-api', {
-    body: { action: 'deleteSubAdmin', adminPassword: _adminPassword, id },
-  });
+  await callFlat('deleteSubAdmin', { id });
 }
 
 export async function subAdminLogin(username: string, password: string): Promise<{ ok: boolean; admin?: SubAdmin; sessionToken?: string; error?: string }> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase.functions.invoke('admin-api', {
-    body: { action: 'subAdminLogin', username, password },
-  });
-  if (error || !data?.ok) return { ok: false, error: data?.error || 'Erro ao autenticar' };
-  // Server returns a session token — password is never stored or re-sent
+  const data = await invokeAdminApi({ action: 'subAdminLogin', username, password });
+  if (!data.ok) return { ok: false, error: data.error || 'Erro ao autenticar' };
   return { ok: true, admin: data.admin, sessionToken: data.sessionToken };
 }
 

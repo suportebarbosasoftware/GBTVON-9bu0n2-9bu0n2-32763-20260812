@@ -2,6 +2,7 @@
 // Handles all admin + representative operations
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
+import { issueRootSession, verifyRootSession } from '../_shared/adminSession.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 
@@ -63,6 +64,21 @@ Deno.serve(async (req) => {
       return json({ success: true, updated: updated?.length ?? 0 });
     }
 
+    // Root password is exchanged once for a signed session; legacy APK requests remain supported.
+    if (action === 'rootAdminLogin') {
+      if (!ADMIN_PASSWORD) {
+        console.error('[rootAdminLogin] ADMIN_PASSWORD is not configured');
+        return new Response(JSON.stringify({ error: 'A senha administrativa não está configurada no servidor.', code: 'admin_not_configured' }), {
+          status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+      if (typeof body.password !== 'string' || !body.password || body.password !== ADMIN_PASSWORD) {
+        return adminSessionError('Senha incorreta.', 'invalid_credentials');
+      }
+      const session = await issueRootSession(ADMIN_PASSWORD);
+      return json({ ok: true, rootSessionToken: session.token, expiresAt: session.expiresAt });
+    }
+
     // ── Representative login ──────────────────────────────────────────────────
 
     if (action === 'repLogin') {
@@ -97,23 +113,25 @@ Deno.serve(async (req) => {
     if (action === 'subAdminLogin') {
       const { username, password } = body;
       if (!username || !password) return json({ ok: false, error: 'Usuário e senha obrigatórios' });
-      const { data: adm } = await supabase
+      const { data: adm, error: loginError } = await supabase
         .from('admins')
         .select('*')
         .eq('username', username.trim().toLowerCase())
         .eq('active', true)
         .not('parent_id', 'is', null)
         .maybeSingle();
+      if (loginError) throw loginError;
       if (!adm) return json({ ok: false, error: 'Sub-admin não encontrado' });
       if (adm.password_hash !== password) return json({ ok: false, error: 'Senha incorreta' });
 
       // Generate session token — expires in 24h
       const token = generateSessionToken();
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      await supabase.from('admins').update({
+      const { error: sessionError } = await supabase.from('admins').update({
         session_token: token,
         session_expires_at: expiresAt,
       }).eq('id', adm.id);
+      if (sessionError) throw sessionError;
 
       return json({
         ok: true,
@@ -389,14 +407,16 @@ Deno.serve(async (req) => {
     // ── Admin auth — resolve identity ─────────────────────────────────────────
     //
     // Sub-admins: pass adminId + sessionToken (issued at login, never the raw password)
-    // Root admin: pass adminPassword (env var, never stored in app)
-    //
-    const { adminId, sessionToken } = body;
+    // Root admin: signed rootSessionToken; legacy adminPassword accepted only when nonempty and valid.
+    // A partial/expired sub-admin identity MUST NOT fall back to root.
+    const { adminId, sessionToken, rootSessionToken } = body;
     let resolvedAdminId: string | null = null;
 
-    if (adminId && sessionToken) {
-      // Validate session token — must exist, not expired, belong to a sub-admin
-      const { data: subAdm } = await supabase
+    if (adminId !== undefined || sessionToken !== undefined) {
+      if (!adminId || !sessionToken || rootSessionToken !== undefined) {
+        return adminSessionError('Sessão administrativa incompleta. Faça login novamente.', 'session_invalid');
+      }
+      const { data: subAdm, error: sessionQueryError } = await supabase
         .from('admins')
         .select('id, parent_id, active, session_expires_at')
         .eq('id', adminId)
@@ -404,26 +424,22 @@ Deno.serve(async (req) => {
         .eq('active', true)
         .not('parent_id', 'is', null)
         .maybeSingle();
-      if (!subAdm) {
-        return new Response(JSON.stringify({ error: 'Sessão inválida. Faça login novamente.' }), {
-          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
-      // Check token expiry
-      if (subAdm.session_expires_at && new Date(subAdm.session_expires_at) < new Date()) {
-        return new Response(JSON.stringify({ error: 'Sessão expirada. Faça login novamente.' }), {
-          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+      if (sessionQueryError) throw sessionQueryError;
+      if (!subAdm) return adminSessionError('Sessão inválida. Faça login novamente.', 'session_invalid');
+      if (!subAdm.session_expires_at || !Number.isFinite(new Date(subAdm.session_expires_at).getTime()) || new Date(subAdm.session_expires_at).getTime() <= Date.now()) {
+        return adminSessionError('Sessão expirada. Faça login novamente.', 'session_expired');
       }
       resolvedAdminId = subAdm.id;
-    } else {
-      const isAdminAction = adminPassword !== undefined;
-      if (isAdminAction && adminPassword !== ADMIN_PASSWORD) {
-        return new Response(JSON.stringify({ error: 'Senha incorreta.' }), {
-          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+    } else if (rootSessionToken !== undefined) {
+      if (!await verifyRootSession(rootSessionToken, ADMIN_PASSWORD)) {
+        return adminSessionError('Sessão administrativa inválida ou expirada. Faça login novamente.', 'session_expired');
       }
-      resolvedAdminId = null; // root admin
+      resolvedAdminId = null;
+    } else {
+      if (!ADMIN_PASSWORD || typeof adminPassword !== 'string' || !adminPassword || adminPassword !== ADMIN_PASSWORD) {
+        return adminSessionError(adminPassword ? 'Senha incorreta.' : 'Sessão administrativa ausente. Faça login novamente.', adminPassword ? 'invalid_credentials' : 'session_missing');
+      }
+      resolvedAdminId = null;
     }
 
     // ── Scope helpers ─────────────────────────────────────────────────────────
@@ -893,6 +909,12 @@ Deno.serve(async (req) => {
 function json(data: object) {
   return new Response(JSON.stringify(data), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
+function adminSessionError(message: string, code: string) {
+  return new Response(JSON.stringify({ error: message, code }), {
+    status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
 }
 

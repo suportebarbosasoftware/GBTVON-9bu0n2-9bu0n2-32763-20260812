@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { DevModeProvider } from '@/contexts/DevModeContext';
+import { AdminPanelProvider } from '@/contexts/AdminPanelContext';
 
 // Orientation is locked to landscape via app.json "orientation": "landscape"
 // expo-screen-orientation is NOT used — crashes on Android TV
@@ -14,6 +15,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <DevModeProvider>
         <AuthProvider>
+        <AdminPanelProvider>
           <StatusBar style="light" hidden />
           <Stack
             screenOptions={{
@@ -63,6 +65,7 @@ export default function RootLayout() {
               }}
             />
           </Stack>
+        </AdminPanelProvider>
         </AuthProvider>
         </DevModeProvider>
       </SafeAreaProvider>

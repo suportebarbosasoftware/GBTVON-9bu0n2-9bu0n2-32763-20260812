@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput,
   Modal, ActivityIndicator, Alert, Dimensions, KeyboardAvoidingView,
@@ -10,21 +10,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
 import {
-  getDevices, getPlans, getStats, getNotifications, getWatchingNow,
   activateDevice, deactivateDevice, blockDevice, deleteDevice, deleteDevicesBulk,
   deleteInactiveDevices, grantGracePeriod, updateDeviceNotes, setDeviceExpiry,
   setDevicePrice, createPlan, updatePlan, deletePlan, preAuthorizeEmail,
-  sendNotification, deleteNotification, setAdminPassword,
-  getSubAdmins, createSubAdmin, updateSubAdmin, deleteSubAdmin, subAdminLogin,
-  setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession,
-  Device, Plan, AdminStats, Notification, WatchingDevice, SubAdmin,
+  sendNotification, deleteNotification,
+  createSubAdmin, updateSubAdmin, deleteSubAdmin,
+  Device, Plan, SubAdmin,
 } from '@/services/adminApiService';
 import {
-  getRepresentatives, createRepresentative, updateRepresentative, deleteRepresentative,
-  addCredits, removeCredits, getSources, createSource, updateSource, deleteSource,
-  setRepAdminPassword, setRepSubAdminCredentials, clearRepSubAdminCredentials,
+  createRepresentative, updateRepresentative, deleteRepresentative,
+  addCredits, removeCredits, createSource, updateSource, deleteSource,
   Representative, Source,
 } from '@/services/repApiService';
+import { useAdminPanel } from '@/hooks/useAdminPanel';
+import { AdminSyncStatus } from '@/components/ui/AdminSyncStatus';
 
 const { width } = Dimensions.get('window');
 
@@ -74,22 +73,19 @@ export default function AdminScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
-  const [authenticated, setAuthenticated] = useState(false);
-  const [isSubAdmin, setIsSubAdmin] = useState(false);
-  const [currentSubAdmin, setCurrentSubAdmin] = useState<SubAdmin | null>(null);
+  const {
+    authenticated, isSubAdmin, currentSubAdmin, loading, refreshing,
+    stats, devices, plans, notifications, watchingNow, reps, sources, subAdmins,
+    loaded, syncError, accessError, login, loadAll, loadWatching, refresh, reset,
+  } = useAdminPanel();
+
+  // Leaving the panel clears only its in-memory session; pending responses cannot repopulate another identity.
+  useEffect(() => () => reset(), [reset]);
   const [loginMode, setLoginMode] = useState<'root' | 'subadmin'>('root');
   const [subAdminUsername, setSubAdminUsername] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [stats, setStats] = useState<AdminStats | null>(null);
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [watchingNow, setWatchingNow] = useState<WatchingDevice[]>([]);
   const [devicesFilter, setDevicesFilter] = useState<'all' | 'active' | 'pending' | 'blocked' | 'online'>('all');
   const [devicesSearch, setDevicesSearch] = useState('');
 
@@ -130,7 +126,6 @@ export default function AdminScreen() {
   const [preAuthLoading, setPreAuthLoading] = useState(false);
 
   // Representatives
-  const [reps, setReps] = useState<Representative[]>([]);
   const [repModal, setRepModal] = useState(false);
   const [editingRep, setEditingRep] = useState<Representative | null>(null);
   const [repForm, setRepForm] = useState({ name: '', rep_number: '', password: '', credits: '0', notes: '' });
@@ -143,14 +138,12 @@ export default function AdminScreen() {
   const [creditsDescription, setCreditsDescription] = useState('');
 
   // Sub-admins
-  const [subAdmins, setSubAdmins] = useState<SubAdmin[]>([]);
   const [subAdminModal, setSubAdminModal] = useState(false);
   const [editingSubAdmin, setEditingSubAdmin] = useState<SubAdmin | null>(null);
   const [subAdminForm, setSubAdminForm] = useState({ username: '', password: '', name: '', notes: '' });
   const [subAdminFormLoading, setSubAdminFormLoading] = useState(false);
 
   // Sources
-  const [sources, setSources] = useState<Source[]>([]);
   const [sourceModal, setSourceModal] = useState(false);
   const [editingSource, setEditingSource] = useState<Source | null>(null);
   const [sourceForm, setSourceForm] = useState({ name: '', server_url: 'https://odira.sbs', xtream_username: '', xtream_password: '', max_connections: '5', rep_id: '', notes: '' });
@@ -174,114 +167,15 @@ export default function AdminScreen() {
   }, [deviceModal]);
 
   async function handlePasswordSubmit() {
+    if (loading) return;
     if (!passwordInput.trim()) { setPasswordError('Digite a senha de acesso'); return; }
-    setLoading(true);
+    if (loginMode === 'subadmin' && !subAdminUsername.trim()) { setPasswordError('Digite o usuário'); return; }
     setPasswordError('');
-    const pwd = passwordInput.trim();
-    try {
-      if (loginMode === 'subadmin') {
-        if (!subAdminUsername.trim()) { setPasswordError('Digite o usuário'); setLoading(false); return; }
-        const result = await subAdminLogin(subAdminUsername.trim(), pwd);
-        if (!result.ok || !result.admin || !result.sessionToken) { setPasswordError(result.error || 'Credenciais inválidas'); setLoading(false); return; }
-        // Store session TOKEN (not password) — password never leaves this function
-        setSubAdminCredentials(result.admin.id, result.sessionToken);
-        setRepSubAdminCredentials(result.admin.id, result.sessionToken);
-        setCurrentSubAdmin(result.admin);
-        setIsSubAdmin(true);
-        setAuthenticated(true);
-        await loadAllForSubAdmin();
-      } else {
-        // Set password in BOTH services BEFORE any API call
-        setAdminPassword(pwd);
-        setRepAdminPassword(pwd);
-        // Verify password by calling getStats
-        const statsData = await getStats();
-        setStats(statsData);
-        // Load all data — pass pwd directly to avoid stale closure issue
-        await loadAllRoot(pwd);
-        setAuthenticated(true);
-      }
-    } catch (err: any) {
-      const msg = err?.message || '';
-      if (msg.includes('401') || msg.includes('403') || msg.toLowerCase().includes('senha') || msg.toLowerCase().includes('incorreta')) {
-        setPasswordError('Senha incorreta');
-      } else {
-        setPasswordError('Erro de conexão. Tente novamente.');
-      }
-      // Only clear credentials on auth failure
-      setAdminPassword('');
-      setRepAdminPassword('');
-      clearSubAdminCredentials();
-      clearRepSubAdminCredentials();
-    }
-    setLoading(false);
+    // The password is used only for login; every refresh uses the shared server-issued session.
+    const error = await login(loginMode, passwordInput, subAdminUsername);
+    if (error) setPasswordError(error);
+    else setPasswordInput('');
   }
-
-  /** Load for sub-admin — called immediately after sub-admin login */
-  async function loadAllForSubAdmin(silent = false) {
-    if (!silent) setLoading(true);
-    try {
-      const [s, d, p, n, repsList, sourcesList] = await Promise.all([
-        getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
-      ]);
-      setStats(s); setDevices(d); setPlans(p); setNotifications(n);
-      setReps(repsList); setSources(sourcesList);
-    } catch (err: any) {
-      if (!silent) Alert.alert('Erro', err.message);
-    }
-    if (!silent) setLoading(false);
-    setRefreshing(false);
-  }
-
-  /** Load for root admin — called after login with explicit password to avoid stale closure */
-  async function loadAllRoot(pwd: string, silent = false) {
-    // Ensure both services have the password before parallel calls
-    setAdminPassword(pwd);
-    setRepAdminPassword(pwd);
-    if (!silent) setLoading(true);
-    try {
-      const [s, d, p, n, repsList, sourcesList, subAdminsList] = await Promise.all([
-        getStats(), getDevices(), getPlans(), getNotifications(),
-        getRepresentatives(), getSources(), getSubAdmins()
-      ]);
-      setStats(s); setDevices(d); setPlans(p); setNotifications(n);
-      setReps(repsList); setSources(sourcesList); setSubAdmins(subAdminsList ?? []);
-    } catch (err: any) {
-      if (!silent) Alert.alert('Erro', err.message);
-    }
-    if (!silent) setLoading(false);
-    setRefreshing(false);
-  }
-
-  const loadAll = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      if (isSubAdmin) {
-        // Sub-admin: no getSubAdmins()
-        const [s, d, p, n, repsList, sourcesList] = await Promise.all([
-          getStats(), getDevices(), getPlans(), getNotifications(), getRepresentatives(), getSources()
-        ]);
-        setStats(s); setDevices(d); setPlans(p); setNotifications(n);
-        setReps(repsList); setSources(sourcesList);
-      } else {
-        // Root admin: include getSubAdmins()
-        const [s, d, p, n, repsList, sourcesList, subAdminsList] = await Promise.all([
-          getStats(), getDevices(), getPlans(), getNotifications(),
-          getRepresentatives(), getSources(), getSubAdmins()
-        ]);
-        setStats(s); setDevices(d); setPlans(p); setNotifications(n);
-        setReps(repsList); setSources(sourcesList); setSubAdmins(subAdminsList ?? []);
-      }
-    } catch (err: any) {
-      if (!silent) Alert.alert('Erro', err.message);
-    }
-    if (!silent) setLoading(false);
-    setRefreshing(false);
-  }, [isSubAdmin]);
-
-  const loadWatching = useCallback(async () => {
-    try { const w = await getWatchingNow(); setWatchingNow(w); } catch {}
-  }, []);
 
   useEffect(() => {
     if (authenticated) {
@@ -485,6 +379,7 @@ export default function AdminScreen() {
         <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16, width: '100%', maxWidth: 360 }}>
           <Pressable
             style={[styles.loginBtn, { flex: 1, height: 38, backgroundColor: loginMode === 'root' ? Colors.primary : '#1a1a1a', borderWidth: 1, borderColor: loginMode === 'root' ? Colors.primary : 'rgba(255,255,255,0.1)' }]}
+            disabled={loading}
             onPress={() => { setLoginMode('root'); setPasswordInput(''); setSubAdminUsername(''); setPasswordError(''); }}
           >
             <Ionicons name="shield-checkmark-outline" size={14} color={loginMode === 'root' ? '#fff' : Colors.textMuted} />
@@ -492,6 +387,7 @@ export default function AdminScreen() {
           </Pressable>
           <Pressable
             style={[styles.loginBtn, { flex: 1, height: 38, backgroundColor: loginMode === 'subadmin' ? '#1565C0' : '#1a1a1a', borderWidth: 1, borderColor: loginMode === 'subadmin' ? '#1565C0' : 'rgba(255,255,255,0.1)' }]}
+            disabled={loading}
             onPress={() => { setLoginMode('subadmin'); setPasswordInput(''); setSubAdminUsername(''); setPasswordError(''); }}
           >
             <Ionicons name="person-circle-outline" size={14} color={loginMode === 'subadmin' ? '#fff' : Colors.textMuted} />
@@ -510,10 +406,13 @@ export default function AdminScreen() {
             <Ionicons name="lock-closed-outline" size={18} color={Colors.textMuted} />
             <TextInput style={styles.input} placeholder={loginMode === 'root' ? 'Senha de acesso' : 'Senha do sub-admin'} placeholderTextColor={Colors.textMuted} value={passwordInput} onChangeText={t => { setPasswordInput(t); setPasswordError(''); }} secureTextEntry returnKeyType="go" onSubmitEditing={handlePasswordSubmit} />
           </View>
-          {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
-          <Pressable style={[styles.loginBtn, { backgroundColor: loginMode === 'subadmin' ? '#1565C0' : Colors.primary }]} onPress={handlePasswordSubmit}>
-            <Ionicons name={loginMode === 'subadmin' ? 'person-circle-outline' : 'shield-checkmark-outline'} size={18} color="#fff" />
-            <Text style={styles.loginBtnText}>  Entrar</Text>
+          {passwordError || accessError ? <Text style={styles.errorText} accessibilityLiveRegion="polite">{passwordError || accessError}</Text> : null}
+          <Pressable
+            style={({ pressed }) => [styles.loginBtn, { backgroundColor: Colors.primary, opacity: loading || pressed ? 0.65 : 1 }]}
+            onPress={handlePasswordSubmit} disabled={loading} accessibilityRole="button" accessibilityLabel="Entrar no painel administrativo"
+          >
+            {loading ? <ActivityIndicator size="small" color={Colors.textPrimary} /> : <Ionicons name={loginMode === 'subadmin' ? 'person-circle-outline' : 'shield-checkmark-outline'} size={18} color={Colors.textPrimary} />}
+            <Text style={styles.loginBtnText}>{loading ? '  Entrando' : '  Entrar'}</Text>
           </Pressable>
         </View>
         <Pressable style={styles.backLink} onPress={() => router.back()}>
@@ -536,10 +435,10 @@ export default function AdminScreen() {
           <Text style={styles.headerTitle}>{isSubAdmin ? `Sub-Admin: ${currentSubAdmin?.name}` : 'Painel Admin'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#4CAF50' }} />
-            <Text style={styles.headerSub}>{onlineCount} online • {watchingNow.length} assistindo</Text>
+            <Text style={styles.headerSub}>{loaded.devices ? `${onlineCount} online` : 'Dispositivos: aguardando dados'} • {loaded.watchingNow ? `${watchingNow.length} assistindo` : 'Conteúdo: aguardando dados'}</Text>
           </View>
         </View>
-        <Pressable onPress={() => isSubAdmin ? loadAllForSubAdmin() : loadAll()} style={styles.headerRefresh} hitSlop={8} disabled={loading}>
+        <Pressable onPress={() => { void loadAll(); }} style={({ pressed }) => [styles.headerRefresh, pressed ? { opacity: 0.65 } : null]} hitSlop={8} disabled={loading} accessibilityRole="button" accessibilityLabel="Atualizar painel">
           {loading ? <ActivityIndicator color={Colors.primary} size="small" /> : <Ionicons name="refresh" size={20} color={Colors.primary} />}
         </Pressable>
       </View>
@@ -571,7 +470,8 @@ export default function AdminScreen() {
       </ScrollView>
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadAll(); }} tintColor={Colors.primary} />}>
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { void refresh(); }} tintColor={Colors.primary} />}>
+        <AdminSyncStatus loading={loading} error={syncError} onRetry={() => { void loadAll(); }} />
 
         {/* ── DASHBOARD ── */}
         {activeTab === 'dashboard' && (
@@ -579,15 +479,15 @@ export default function AdminScreen() {
             <Text style={styles.sectionTitle}>Visão Geral</Text>
             <View style={styles.statsGrid}>
               <StatCard icon="phone-portrait" label="Total" value={String(stats?.total ?? '—')} color="#4FC3F7" />
-              <StatCard icon="radio-button-on" label="Online" value={String(stats?.online ?? onlineCount)} color="#4CAF50" />
+              <StatCard icon="radio-button-on" label="Online" value={String(stats?.online ?? (loaded.devices ? onlineCount : '—'))} color="#4CAF50" />
               <StatCard icon="checkmark-circle" label="Ativos" value={String(stats?.active ?? '—')} color="#8BC34A" />
               <StatCard icon="time" label="Pendentes" value={String(stats?.pending ?? '—')} color="#FF9800" />
               <StatCard icon="ban" label="Bloqueados" value={String(stats?.blocked ?? '—')} color={Colors.error} />
-              <StatCard icon="eye" label="Assistindo" value={String(stats?.watching ?? watchingNow.length)} color="#9C27B0" />
+              <StatCard icon="eye" label="Assistindo" value={String(stats?.watching ?? (loaded.watchingNow ? watchingNow.length : '—'))} color="#9C27B0" />
             </View>
             <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Online Agora</Text>
             {devices.filter(d => isOnline(d.last_seen_at)).length === 0 ? (
-              <Text style={styles.emptyText}>Nenhum dispositivo online</Text>
+              <Text style={styles.emptyText}>{loaded.devices ? 'Nenhum dispositivo online' : loading ? 'Carregando dispositivos...' : 'Lista de dispositivos indisponível. Tente atualizar.'}</Text>
             ) : devices.filter(d => isOnline(d.last_seen_at)).map(d => (
               <View key={d.id} style={styles.onlineRow}>
                 <View style={styles.onlineDot} />
@@ -635,7 +535,7 @@ export default function AdminScreen() {
           repGroups.sort((a, b) => b.count - a.count);
 
           // Devices for current rep filter
-          const repFilteredDevices = devicesRepFilter === null
+          const repFilteredDevices = devicesRepFilter === null || devicesRepFilter === '__all__'
             ? devices
             : devicesRepFilter === '__admin__'
               ? devices.filter(d => !d.rep_id)
@@ -671,7 +571,7 @@ export default function AdminScreen() {
                     <View style={styles.repGroupIcon}><Ionicons name="apps-outline" size={20} color={Colors.primary} /></View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.repGroupLabel}>Todos os dispositivos</Text>
-                      <Text style={styles.repGroupMeta}>{devices.length} MACs • {devices.filter(d => isOnline(d.last_seen_at)).length} online</Text>
+                      <Text style={styles.repGroupMeta}>{loaded.devices ? `${devices.length} MACs • ${onlineCount} online` : 'Aguardando a lista de dispositivos'}</Text>
                     </View>
                     <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
                   </Pressable>
@@ -757,7 +657,7 @@ export default function AdminScreen() {
                     </Pressable>
                   )}
                   {scopedFiltered.length === 0 ? (
-                    <View style={styles.emptyState}><Ionicons name="phone-portrait-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum dispositivo encontrado</Text></View>
+                    <View style={styles.emptyState}><Ionicons name="phone-portrait-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.devices ? 'Nenhum dispositivo encontrado' : 'Lista ainda não carregada. Atualize o painel.'}</Text></View>
                   ) : scopedFiltered.map(d => {
                     const isSelected = selectedIds.has(d.id);
                     return (
@@ -806,7 +706,7 @@ export default function AdminScreen() {
         {activeTab === 'plans' && (
           <View style={styles.section}>
             <Pressable style={styles.createBtn} onPress={openCreatePlan}><Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Criar novo plano</Text></Pressable>
-            {plans.length === 0 ? <View style={styles.emptyState}><Ionicons name="layers-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum plano criado</Text></View>
+            {plans.length === 0 ? <View style={styles.emptyState}><Ionicons name="layers-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.plans ? 'Nenhum plano criado' : 'Planos ainda não carregados. Atualize o painel.'}</Text></View>
               : plans.map(plan => (
                 <View key={plan.id} style={styles.planCard}>
                   <View style={styles.planCardHeader}>
@@ -836,7 +736,7 @@ export default function AdminScreen() {
               <Ionicons name="person-add-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Novo Representante</Text>
             </Pressable>
             {reps.length === 0 ? (
-              <View style={styles.emptyState}><Ionicons name="people-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum representante cadastrado</Text></View>
+              <View style={styles.emptyState}><Ionicons name="people-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.reps ? 'Nenhum representante cadastrado' : 'Representantes ainda não carregados. Atualize o painel.'}</Text></View>
             ) : reps.map(r => (
               <View key={r.id} style={styles.planCard}>
                 <View style={styles.planCardHeader}>
@@ -895,7 +795,7 @@ export default function AdminScreen() {
                 <Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Nova Fonte</Text>
               </Pressable>
               {sources.length === 0 ? (
-                <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhuma fonte criada</Text></View>
+                <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.sources ? 'Nenhuma fonte criada' : 'Fontes ainda não carregadas. Atualize o painel.'}</Text></View>
               ) : groups.map(([key, group]) => {
                 const isExpanded = expandedSourceReps.has(key);
                 const totalMacs = group.sources.reduce((s, src) => s + (src.active_macs ?? 0), 0);
@@ -956,7 +856,7 @@ export default function AdminScreen() {
         {activeTab === 'notifications' && (
           <View style={styles.section}>
             <Pressable style={styles.createBtn} onPress={() => setNotifModal(true)}><Ionicons name="notifications-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Enviar novo aviso</Text></Pressable>
-            {notifications.length === 0 ? <View style={styles.emptyState}><Ionicons name="notifications-off-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum aviso enviado</Text></View>
+            {notifications.length === 0 ? <View style={styles.emptyState}><Ionicons name="notifications-off-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.notifications ? 'Nenhum aviso enviado' : 'Avisos ainda não carregados. Atualize o painel.'}</Text></View>
               : notifications.map(n => (
                 <View key={n.id} style={styles.notifCard}>
                   <View style={styles.notifHeader}>
@@ -981,7 +881,7 @@ export default function AdminScreen() {
               <Pressable onPress={loadWatching} hitSlop={8} style={{ marginLeft: 'auto' }}><Ionicons name="refresh" size={18} color={Colors.primary} /></Pressable>
             </View>
             {watchingNow.length === 0 ? (
-              <View style={styles.emptyState}><Ionicons name="tv-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>Nenhum usuário assistindo agora</Text><Text style={styles.emptySubText}>O app reporta conteúdo durante a reprodução</Text></View>
+              <View style={styles.emptyState}><Ionicons name="tv-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.watchingNow ? 'Nenhum usuário assistindo agora' : 'Conteúdo ainda não carregado. Atualize o painel.'}</Text><Text style={styles.emptySubText}>O app reporta conteúdo durante a reprodução</Text></View>
             ) : watchingNow.map(w => (
               <View key={w.id} style={styles.watchingCard}>
                 <View style={styles.watchingCardIcon}><Ionicons name={w.current_content_type === 'live' ? 'tv' : w.current_content_type === 'movie' ? 'film' : 'videocam'} size={22} color="#9C27B0" /></View>
@@ -1003,6 +903,7 @@ export default function AdminScreen() {
 
         {/* ── FINANCIAL ── */}
         {activeTab === 'financial' && (() => {
+          if (!loaded.devices) return <View style={styles.section}><Text style={styles.emptyText}>O financeiro depende da lista de dispositivos, que ainda não foi carregada.</Text></View>;
           // Admin-direct only: devices without rep_id
           const adminActive = devices.filter(d => !d.rep_id && d.activated && !d.blocked_reason);
           const adminPriced = adminActive.filter(d => d.price != null && d.price > 0);
@@ -1151,7 +1052,7 @@ export default function AdminScreen() {
             {subAdmins.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="shield-half-outline" size={40} color={Colors.textMuted} />
-                <Text style={styles.emptyText}>Nenhum sub-admin criado</Text>
+                <Text style={styles.emptyText}>{loaded.subAdmins ? 'Nenhum sub-admin criado' : 'Sub-admins ainda não carregados. Atualize o painel.'}</Text>
               </View>
             ) : subAdmins.map(sa => (
               <View key={sa.id} style={[styles.planCard, { borderColor: 'rgba(21,101,192,0.2)' }]}>
