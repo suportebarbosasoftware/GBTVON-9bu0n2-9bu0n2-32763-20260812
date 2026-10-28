@@ -2,10 +2,10 @@
  * GBTVON — Painel do Representante
  * Acessado pela tela inicial via "Área do Representante"
  */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput,
-  Modal, ActivityIndicator, Alert, Dimensions, KeyboardAvoidingView,
+  View, Text, StyleSheet, ScrollView, FlatList, Pressable, TextInput,
+  Modal, ActivityIndicator, Dimensions, KeyboardAvoidingView,
   Platform, RefreshControl, Clipboard,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -13,12 +13,13 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '@/constants/theme';
-import {
-  repLogin, getRepDevices, getRepSources, activateRepDevice, activateRepTest,
-  deactivateRepDevice, blockRepDevice, unblockRepDevice, deleteRepDevice, renewRepDevice,
-  changeRepDeviceSource, lookupDeviceByMac, updateRepDevicePrice,
-  Representative, Source, RepDevice,
-} from '@/services/repApiService';
+import type { Source, RepDevice } from '@/services/repApiService';
+import { useAlert } from '@/template';
+import { useRepPanel } from '@/hooks/useRepPanel';
+import { useRepPanelActions } from '@/hooks/useRepPanelActions';
+import { useRepPanelPolling } from '@/hooks/useRepPanelPolling';
+import { AdminSyncStatus } from '@/components/ui/AdminSyncStatus';
+import { RepDeviceCard } from '@/components/feature/RepDeviceCard';
 
 const { width } = Dimensions.get('window');
 
@@ -74,20 +75,25 @@ export default function RepPanelScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [rep, setRep] = useState<Representative | null>(null);
+  const { showAlert } = useAlert();
+  const {
+    loggedIn, rep, devices, sources, clientsLoaded, sourcesLoaded, loading, sourcesLoading,
+    refreshing, loginLoading, accessError, syncError, lastSyncedAt,
+    login, syncClients, loadSources, loadData, refresh, reset,
+  } = useRepPanel();
+  const {
+    activateRepDevice, activateRepTest, deactivateRepDevice, blockRepDevice,
+    unblockRepDevice, deleteRepDevice, renewRepDevice, changeRepDeviceSource,
+    lookupDeviceByMac, updateRepDevicePrice,
+  } = useRepPanelActions();
+
+  useRepPanelPolling(loggedIn, syncClients, loadSources);
+  useEffect(() => () => reset(), [reset]);
   const [repNumber, setRepNumber] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [devices, setDevices] = useState<RepDevice[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
   const [devicesSearch, setDevicesSearch] = useState('');
   const [devicesFilter, setDevicesFilter] = useState<'all' | 'active' | 'blocked' | 'online'>('all');
 
@@ -140,7 +146,24 @@ export default function RepPanelScreen() {
   const addMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const testMacTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (addMacTimer.current) clearTimeout(addMacTimer.current);
+    if (testMacTimer.current) clearTimeout(testMacTimer.current);
+  }, []);
+
+  // Keep an open detail sheet synchronized with the authoritative MAC list.
+  useEffect(() => {
+    if (!loggedIn) {
+      setSelectedDevice(null); setEditPriceDevice(null);
+      setDetailModal(false); setEditPriceModal(false); setEditSourceModal(false);
+      setRenewModal(false); setBlockModal(false);
+      pendingBlockRef.current = false; pendingRenewRef.current = false;
+      return;
+    }
+    if (!clientsLoaded) return;
+    setSelectedDevice(previous => previous ? devices.find(device => device.id === previous.id) ?? null : null);
+    setEditPriceDevice(previous => previous ? devices.find(device => device.id === previous.id) ?? null : null);
+  }, [devices, clientsLoaded, loggedIn]);
 
   // Android fix: open block/renew modals only after detailModal fully closes
   useEffect(() => {
@@ -160,49 +183,22 @@ export default function RepPanelScreen() {
 
   // ── Auth ───────────────────────────────────────────────────────────────────
   async function handleLogin() {
+    if (loginLoading) return;
     if (!repNumber.trim() || !password.trim()) {
       setLoginError('Preencha o código e a senha');
       return;
     }
-    setLoginLoading(true);
     setLoginError('');
-    const result = await repLogin(repNumber.trim(), password.trim());
-    setLoginLoading(false);
-    if (!result.ok || !result.rep) {
-      setLoginError(result.error || 'Código ou senha incorretos');
-      return;
-    }
-    setRep(result.rep);
-    setLoggedIn(true);
-    loadData(true);
+    const error = await login(repNumber.trim(), password.trim());
+    if (error) setLoginError(error);
+    else setPassword('');
   }
 
-  const loadData = useCallback(async (showLoader = false) => {
-    if (showLoader) setLoading(true);
-    try {
-      const [d, s] = await Promise.all([getRepDevices(), getRepSources()]);
-      setDevices(d);
-      setSources(s);
-    } catch (e: any) {
-      if (showLoader) Alert.alert('Erro', e.message);
-    }
-    setLoading(false);
-    setRefreshing(false);
-  }, []);
-
   useEffect(() => {
-    if (loggedIn) {
-      refreshIntervalRef.current = setInterval(() => loadData(false), 30000);
-      return () => { if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current); };
-    }
-  }, [loggedIn, loadData]);
-
-  // Refresh watching data when tab activates
-  useEffect(() => {
-    if (loggedIn && activeTab === 'watching') {
-      loadData(false);
-    }
-  }, [activeTab, loggedIn]);
+    if (!loggedIn) return;
+    if (activeTab === 'watching' || activeTab === 'devices') void syncClients(true);
+    if (activeTab === 'add' || activeTab === 'test' || activeTab === 'dashboard') void loadSources();
+  }, [activeTab, loggedIn, syncClients, loadSources]);
 
   // ── MAC auto-lookup ────────────────────────────────────────────────────────
   function handleAddMacChange(mac: string) {
@@ -264,14 +260,14 @@ export default function RepPanelScreen() {
   async function handleAddDevice() {
     const { mac, clientName, sourceId, packageType, days, expiresDateStr } = addForm;
     if (!mac.trim() || !sourceId || !days) {
-      Alert.alert('Atenção', 'Preencha MAC, fonte e prazo');
+      showAlert('Atenção', 'Preencha MAC, fonte e prazo');
       return;
     }
     const daysNum = parseInt(days);
-    if (isNaN(daysNum) || daysNum < 1) { Alert.alert('Atenção', 'Dias inválidos'); return; }
+    if (isNaN(daysNum) || daysNum < 1) { showAlert('Atenção', 'Dias inválidos'); return; }
     const creditCost = Math.round((daysNum / 30) * 100) / 100;
     if ((rep?.credits ?? 0) < creditCost) {
-      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta ativação custa ${creditCost.toFixed(2)}.`);
+      showAlert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta ativação custa ${creditCost.toFixed(2)}.`);
       return;
     }
 
@@ -294,23 +290,21 @@ export default function RepPanelScreen() {
         days: daysNum,
         expiresAtDate,
       });
-      setRep(prev => prev ? { ...prev, credits: Math.round((prev.credits - creditCost) * 100) / 100 } : prev);
       setAddForm({ mac: '', clientName: '', sourceId: '', packageType: 'iptv', expiresDateStr: '', days: '30' });
-      await loadData(false);
-      Alert.alert('Ativado!', `MAC ${mac.trim().toUpperCase()} ativado com sucesso.`);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+      showAlert('Ativado!', `MAC ${mac.trim().toUpperCase()} ativado com sucesso.`);
+    } catch (e: any) { showAlert('Erro', e.message); }
     setAddLoading(false);
   }
 
   async function handleTestActivation() {
     const { mac, clientName, sourceId, packageType, hours } = testForm;
     if (!mac.trim() || !sourceId) {
-      Alert.alert('Atenção', 'Preencha MAC e fonte');
+      showAlert('Atenção', 'Preencha MAC e fonte');
       return;
     }
     const hoursNum = parseInt(hours);
     if (isNaN(hoursNum) || hoursNum < 1 || hoursNum > 6) {
-      Alert.alert('Atenção', 'Horas deve ser entre 1 e 6');
+      showAlert('Atenção', 'Horas deve ser entre 1 e 6');
       return;
     }
     setTestLoading(true);
@@ -323,21 +317,20 @@ export default function RepPanelScreen() {
         hours: hoursNum,
       });
       setTestForm({ mac: '', clientName: '', sourceId: '', packageType: 'iptv', hours: '2' });
-      await loadData(false);
-      Alert.alert('Teste ativado!', `Acesso de ${hoursNum}h liberado para ${mac.trim().toUpperCase()}.`);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+      showAlert('Teste ativado!', `Acesso de ${hoursNum}h liberado para ${mac.trim().toUpperCase()}.`);
+    } catch (e: any) { showAlert('Erro', e.message); }
     setTestLoading(false);
   }
 
   async function handleDeactivate() {
     if (!selectedDevice) return;
-    Alert.alert('Desativar', `Desativar ${selectedDevice.client_name || selectedDevice.mac_address}?`, [
+    showAlert('Desativar', `Desativar ${selectedDevice.client_name || selectedDevice.mac_address}?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Desativar', style: 'destructive', onPress: async () => {
           setActionLoading(true);
-          try { await deactivateRepDevice(selectedDevice.id); setDetailModal(false); await loadData(false); }
-          catch (e: any) { Alert.alert('Erro', e.message); }
+          try { await deactivateRepDevice(selectedDevice.id); setDetailModal(false);  }
+          catch (e: any) { showAlert('Erro', e.message); }
           setActionLoading(false);
         }
       }
@@ -351,20 +344,19 @@ export default function RepPanelScreen() {
     try {
       await blockRepDevice(selectedDevice.id, blockReason.trim() || 'Bloqueado pelo representante');
       setBlockReason('');
-      await loadData(false);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+    } catch (e: any) { showAlert('Erro', e.message); }
     setActionLoading(false);
   }
 
   async function handleDelete() {
     if (!selectedDevice) return;
-    Alert.alert('Excluir dispositivo', `Remover ${selectedDevice.client_name || selectedDevice.mac_address} permanentemente?`, [
+    showAlert('Excluir dispositivo', `Remover ${selectedDevice.client_name || selectedDevice.mac_address} permanentemente?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Excluir', style: 'destructive', onPress: async () => {
           setActionLoading(true);
-          try { await deleteRepDevice(selectedDevice.id); setDetailModal(false); await loadData(false); }
-          catch (e: any) { Alert.alert('Erro', e.message); }
+          try { await deleteRepDevice(selectedDevice.id); setDetailModal(false);  }
+          catch (e: any) { showAlert('Erro', e.message); }
           setActionLoading(false);
         }
       }
@@ -396,27 +388,25 @@ export default function RepPanelScreen() {
   async function handleRenew() {
     if (!selectedDevice) return;
     const daysNum = parseInt(renewDays);
-    if (isNaN(daysNum) || daysNum < 1) { Alert.alert('Dias inválidos'); return; }
+    if (isNaN(daysNum) || daysNum < 1) { showAlert('Dias inválidos'); return; }
     const creditCost = Math.round((daysNum / 30) * 100) / 100;
     if ((rep?.credits ?? 0) < creditCost) {
-      Alert.alert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta renovação custa ${creditCost.toFixed(2)}.`);
+      showAlert('Créditos insuficientes', `Você tem ${rep?.credits ?? 0} crédito(s). Esta renovação custa ${creditCost.toFixed(2)}.`);
       return;
     }
     setRenewLoading(true);
     try {
-      const result = await renewRepDevice(selectedDevice.id, daysNum);
-      setRep(prev => prev ? { ...prev, credits: Math.round((prev.credits - (result.credit_cost || creditCost)) * 100) / 100 } : prev);
+      await renewRepDevice(selectedDevice.id, daysNum);
       setRenewModal(false);
-      await loadData(false);
-      Alert.alert('Renovado!', `MAC renovado por mais ${daysNum} dias.`);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+      showAlert('Renovado!', `MAC renovado por mais ${daysNum} dias.`);
+    } catch (e: any) { showAlert('Erro', e.message); }
     setRenewLoading(false);
   }
 
   async function handleChangeSource() {
     if (!selectedDevice || !editSourceId) return;
     if (editSourceId === selectedDevice.source_id) {
-      Alert.alert('Atenção', 'Selecione uma fonte diferente da atual.');
+      showAlert('Atenção', 'Selecione uma fonte diferente da atual.');
       return;
     }
     setEditSourceLoading(true);
@@ -424,10 +414,9 @@ export default function RepPanelScreen() {
       const result = await changeRepDeviceSource(selectedDevice.id, editSourceId);
       setEditSourceModal(false);
       setDetailModal(false);
-      await loadData(false);
-      Alert.alert('Fonte alterada!', `Dispositivo migrado para a fonte "${result.source_name}" com sucesso.`);
+      showAlert('Fonte alterada!', `Dispositivo migrado para a fonte "${result.source_name}" com sucesso.`);
     } catch (e: any) {
-      Alert.alert('Erro', e.message || 'Falha ao trocar fonte. Tente novamente.');
+      showAlert('Erro', e.message || 'Falha ao trocar fonte. Tente novamente.');
     } finally {
       setEditSourceLoading(false);
     }
@@ -439,8 +428,7 @@ export default function RepPanelScreen() {
     try {
       await unblockRepDevice(selectedDevice.id);
       setDetailModal(false);
-      await loadData(false);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+    } catch (e: any) { showAlert('Erro', e.message); }
     setActionLoading(false);
   }
 
@@ -448,31 +436,37 @@ export default function RepPanelScreen() {
     if (!editPriceDevice) return;
     const price = editPriceInput.trim() ? parseFloat(editPriceInput.replace(',', '.')) : null;
     if (editPriceInput.trim() && (isNaN(price!) || price! < 0)) {
-      Alert.alert('Valor inválido', 'Digite um valor numérico válido.');
+      showAlert('Valor inválido', 'Digite um valor numérico válido.');
       return;
     }
     setEditPriceLoading(true);
     try {
       await updateRepDevicePrice(editPriceDevice.id, price);
       setEditPriceModal(false);
-      await loadData(false);
-    } catch (e: any) { Alert.alert('Erro', e.message); }
+    } catch (e: any) { showAlert('Erro', e.message); }
     setEditPriceLoading(false);
   }
 
   // ── Computed
-  const filteredDevices = devices.filter(d => {
-    const q = devicesSearch.toLowerCase();
-    const matchSearch = !q ||
-      (d.client_name || '').toLowerCase().includes(q) ||
-      d.mac_address.toLowerCase().includes(q);
+  const filteredDevices = useMemo(() => devices.filter(d => {
+    const q = devicesSearch.trim().toLowerCase();
+    const matchSearch = !q || (d.client_name || '').toLowerCase().includes(q) ||
+      d.mac_address.toLowerCase().includes(q) || d.email.toLowerCase().includes(q);
     const matchFilter =
       devicesFilter === 'all' ? true :
       devicesFilter === 'online' ? isOnline(d.last_seen_at) :
       devicesFilter === 'active' ? (d.activated && !d.blocked_reason) :
       devicesFilter === 'blocked' ? !!d.blocked_reason : true;
     return matchSearch && matchFilter;
-  });
+  }), [devices, devicesSearch, devicesFilter]);
+
+  const handleOpenDevice = useCallback((device: RepDevice) => {
+    setSelectedDevice(device); setDetailModal(true);
+  }, []);
+  const handleCopyMac = useCallback((mac: string) => {
+    Clipboard.setString(mac);
+    showAlert('MAC copiado', mac);
+  }, [showAlert]);
 
   const activeDevices = devices.filter(d => d.activated && !d.blocked_reason).length;
   const onlineDevices = devices.filter(d => isOnline(d.last_seen_at)).length;
@@ -542,10 +536,10 @@ export default function RepPanelScreen() {
               </Pressable>
             </View>
 
-            {loginError ? (
+            {loginError || accessError ? (
               <View style={styles.errorRow}>
                 <Ionicons name="alert-circle-outline" size={14} color={Colors.error} />
-                <Text style={styles.errorText}> {loginError}</Text>
+                <Text style={styles.errorText}> {loginError || accessError}</Text>
               </View>
             ) : null}
 
@@ -590,7 +584,7 @@ export default function RepPanelScreen() {
           <Ionicons name="wallet-outline" size={14} color="#FFD700" />
           <Text style={styles.creditsText}> {rep?.credits ?? 0}</Text>
         </View>
-        <Pressable onPress={() => loadData(true)} hitSlop={8} style={{ padding: 4 }} disabled={loading}>
+        <Pressable onPress={() => { void loadData(true); }} accessibilityRole="button" accessibilityLabel="Sincronizar MACs do representante" hitSlop={8} style={({ pressed }) => [{ minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center' }, pressed ? { opacity: 0.65 } : null]} disabled={loading}>
           {loading
             ? <ActivityIndicator color={Colors.primary} size="small" />
             : <Ionicons name="refresh" size={20} color={Colors.primary} />}
@@ -620,31 +614,36 @@ export default function RepPanelScreen() {
         </View>
       </ScrollView>
 
-      <ScrollView
+      <FlatList
         style={{ flex: 1 }}
+        data={activeTab === 'devices' ? filteredDevices : []}
+        keyExtractor={device => device.id}
+        renderItem={({ item }) => <RepDeviceCard device={item} online={isOnline(item.last_seen_at)} onOpen={handleOpenDevice} onCopy={handleCopyMac} />}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadData(false); }} tintColor={Colors.primary} />}
-      >
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { void refresh(); }} tintColor={Colors.primary} />}
+        ListHeaderComponent={<>
+        <AdminSyncStatus loading={loading} metadataLoading={sourcesLoading} lastSyncedAt={lastSyncedAt} error={syncError} onRetry={() => { void loadData(true); }} />
         {/* ── DASHBOARD ── */}
         {activeTab === 'dashboard' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Resumo</Text>
             <View style={styles.statsGrid}>
               <StatCard icon="wallet" label="Créditos" value={String(rep?.credits ?? 0)} color="#FFD700" />
-              <StatCard icon="phone-portrait" label="Total" value={String(devices.length)} color="#4FC3F7" />
-              <StatCard icon="radio-button-on" label="Online" value={String(onlineDevices)} color="#4CAF50" />
-              <StatCard icon="checkmark-circle" label="Ativos" value={String(activeDevices)} color="#8BC34A" />
-              <StatCard icon="warning" label="Vence 7d" value={String(expiredSoon)} color="#FF9800" />
-              <StatCard icon="ban" label="Bloqueados" value={String(devices.filter(d => !!d.blocked_reason).length)} color={Colors.error} />
+              <StatCard icon="phone-portrait" label="Total" value={clientsLoaded ? String(devices.length) : '—'} color="#4FC3F7" />
+              <StatCard icon="radio-button-on" label="Online" value={clientsLoaded ? String(onlineDevices) : '—'} color="#4CAF50" />
+              <StatCard icon="checkmark-circle" label="Ativos" value={clientsLoaded ? String(activeDevices) : '—'} color="#8BC34A" />
+              <StatCard icon="warning" label="Vence 7d" value={clientsLoaded ? String(expiredSoon) : '—'} color="#FF9800" />
+              <StatCard icon="ban" label="Bloqueados" value={clientsLoaded ? String(devices.filter(d => !!d.blocked_reason).length) : '—'} color={Colors.error} />
             </View>
 
             <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Minhas Fontes</Text>
             {sources.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="server-outline" size={36} color={Colors.textMuted} />
-                <Text style={styles.emptyText}>Nenhuma fonte atribuída</Text>
-                <Text style={styles.emptySubText}>Solicite ao administrador</Text>
+                <Text style={styles.emptyText}>{sourcesLoaded ? 'Nenhuma fonte atribuída' : sourcesLoading ? 'Carregando fontes...' : 'Fontes indisponíveis. Tente atualizar.'}</Text>
+                {sourcesLoaded ? <Text style={styles.emptySubText}>Solicite ao administrador</Text> : null}
               </View>
             ) : (
               sources.map(s => (
@@ -722,60 +721,13 @@ export default function RepPanelScreen() {
             {filteredDevices.length === 0 ? (
               <View style={styles.emptyState}>
                 <Ionicons name="phone-portrait-outline" size={40} color={Colors.textMuted} />
-                <Text style={styles.emptyText}>Nenhum cliente cadastrado</Text>
-                <Pressable style={styles.emptyAddBtn} onPress={() => setActiveTab('add')}>
+                <Text style={styles.emptyText}>{!clientsLoaded ? (loading ? 'Sincronizando MACs...' : 'Lista de MACs indisponível. Tente atualizar.') : devices.length ? 'Nenhum cliente corresponde ao filtro' : 'Nenhum cliente cadastrado'}</Text>
+                {clientsLoaded && devices.length === 0 ? <Pressable style={styles.emptyAddBtn} onPress={() => setActiveTab('add')}>
                   <Ionicons name="add" size={16} color="#fff" />
                   <Text style={styles.emptyAddBtnText}> Ativar primeiro MAC</Text>
-                </Pressable>
+                </Pressable> : null}
               </View>
-            ) : (
-              filteredDevices.map(d => (
-                <Pressable
-                  key={d.id}
-                  style={styles.deviceCard}
-                  onPress={() => { setSelectedDevice(d); setDetailModal(true); }}
-                >
-                  <View style={[styles.statusDot, {
-                    backgroundColor: isOnline(d.last_seen_at) ? '#4CAF50' : d.activated && !d.blocked_reason ? '#8BC34A' : d.blocked_reason ? Colors.error : '#FF9800'
-                  }]} />
-                  <View style={{ flex: 1 }}>
-                    {/* Client name prominent */}
-                    <Text style={styles.deviceClientName} numberOfLines={1}>
-                      {d.client_name || 'Cliente sem nome'}
-                    </Text>
-                    {/* MAC with copy button */}
-                    <View style={styles.deviceMacRow}>
-                      <Text style={styles.deviceMac}>{d.mac_address}</Text>
-                      <Pressable
-                        style={styles.macCopyBtn}
-                        hitSlop={8}
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          Clipboard.setString(d.mac_address);
-                          Alert.alert('MAC copiado!', d.mac_address);
-                        }}
-                      >
-                        <Ionicons name="copy-outline" size={12} color={Colors.primary} />
-                      </Pressable>
-                    </View>
-                    {/* Status and expiry */}
-                    <View style={styles.deviceMeta}>
-                      <Text style={[styles.deviceMetaText, { color: isOnline(d.last_seen_at) ? '#4CAF50' : Colors.textMuted }]}>
-                        {isOnline(d.last_seen_at) ? '● Online' : d.blocked_reason ? '⛔ Bloqueado' : d.activated ? '✓ Ativo' : '⏳ Pendente'}
-                      </Text>
-                      {d.activated && !d.blocked_reason && d.expires_at ? (
-                        <Text style={[styles.deviceMetaText, { color: new Date(d.expires_at) < new Date() ? Colors.error : '#4CAF50', fontWeight: '600' }]}>
-                          {new Date(d.expires_at) < new Date()
-                            ? 'Expirado'
-                            : `Vence ${new Date(d.expires_at).toLocaleDateString('pt-BR')}`}
-                        </Text>
-                      ) : null}
-                    </View>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-                </Pressable>
-              ))
-            )}
+            ) : null}
           </View>
         )}
 
@@ -827,7 +779,7 @@ export default function RepPanelScreen() {
               {sources.length === 0 ? (
                 <View style={styles.noSourcesWarn}>
                   <Ionicons name="warning-outline" size={16} color="#FF9800" />
-                  <Text style={styles.noSourcesText}> Sem fontes disponíveis. Solicite ao administrador.</Text>
+                  <Text style={styles.noSourcesText}>{sourcesLoaded ? ' Sem fontes disponíveis. Solicite ao administrador.' : sourcesLoading ? ' Carregando fontes...' : ' Não foi possível carregar as fontes. Atualize o painel.'}</Text>
                 </View>
               ) : (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
@@ -932,6 +884,7 @@ export default function RepPanelScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Assistindo agora</Text>
             {(() => {
+              if (!clientsLoaded) return <Text style={styles.emptyText}>{loading ? 'Sincronizando MACs e conteúdo...' : 'Lista indisponível. Atualize o painel.'}</Text>;
               // "Assistindo agora": current_content definido e visto nos últimos 30 min
               const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
               const isWatchingRecently = (d: RepDevice) =>
@@ -1011,6 +964,7 @@ export default function RepPanelScreen() {
 
         {/* ── FINANCIAL ── */}
         {activeTab === 'financial' && (() => {
+          if (!clientsLoaded) return <View style={styles.section}><Text style={styles.emptyText}>O financeiro aguarda a sincronização dos MACs.</Text></View>;
           const activeDevices2 = devices.filter(d => d.activated && !d.blocked_reason);
           const pricedDevices = activeDevices2.filter(d => d.price != null && d.price > 0);
           const noPriceDevices = activeDevices2.filter(d => !d.price || d.price <= 0);
@@ -1140,7 +1094,7 @@ export default function RepPanelScreen() {
               {sources.length === 0 ? (
                 <View style={styles.noSourcesWarn}>
                   <Ionicons name="warning-outline" size={16} color="#FF9800" />
-                  <Text style={styles.noSourcesText}> Sem fontes disponíveis. Solicite ao administrador.</Text>
+                  <Text style={styles.noSourcesText}>{sourcesLoaded ? ' Sem fontes disponíveis. Solicite ao administrador.' : sourcesLoading ? ' Carregando fontes...' : ' Não foi possível carregar as fontes. Atualize o painel.'}</Text>
                 </View>
               ) : (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
@@ -1212,7 +1166,8 @@ export default function RepPanelScreen() {
             </View>
           </View>
         )}
-      </ScrollView>
+        </>}
+      />
 
       {/* ── EDIT PRICE MODAL ── */}
       <Modal visible={editPriceModal} transparent animationType="fade" onRequestClose={() => !editPriceLoading && setEditPriceModal(false)}>
@@ -1335,7 +1290,7 @@ export default function RepPanelScreen() {
                       style={styles.detailRow}
                       onPress={() => {
                         Clipboard.setString(selectedDevice.mac_address);
-                        Alert.alert('Copiado!', selectedDevice.mac_address);
+                        showAlert('Copiado!', selectedDevice.mac_address);
                       }}
                     >
                       <Ionicons name="hardware-chip-outline" size={14} color={Colors.textMuted} />
@@ -1823,7 +1778,7 @@ const styles = StyleSheet.create({
   renewExpiryPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(76,175,80,0.08)', borderRadius: 8, padding: 10, marginBottom: 4, borderWidth: 1, borderColor: 'rgba(76,175,80,0.25)' },
   renewExpiryPreviewText: { color: '#4CAF50', fontSize: 12, fontWeight: '600' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: '#141414', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 34, maxHeight: '90%', borderWidth: 1, borderBottomWidth: 0, borderColor: 'rgba(229,0,0,0.2)' },
+  modalSheet: { backgroundColor: '#141414', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 34, height: '90%', maxHeight: '90%', borderWidth: 1, borderBottomWidth: 0, borderColor: 'rgba(229,0,0,0.2)' },
   modalHandle: { width: 36, height: 4, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
   modalTitle: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 16, textAlign: 'center' },
   onlineBannerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(76,175,80,0.1)', borderRadius: 8, padding: 10, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(76,175,80,0.3)' },

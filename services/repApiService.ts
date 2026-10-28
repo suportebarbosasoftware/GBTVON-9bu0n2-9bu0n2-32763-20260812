@@ -2,7 +2,7 @@
  * GBTVON — Representative API Service
  * Handles all representative & sources operations via admin-api edge function.
  * Rep actions authenticate with repId + repPassword (NOT admin password).
- * Admin-only actions still use adminPassword via setRepAdminPassword().
+ * Administrative and representative credentials remain independent.
  */
 import { invokeAdminApi } from '@/services/adminTransportService';
 import { getAdminAuthPayload } from '@/services/adminSessionService';
@@ -80,6 +80,7 @@ export interface RepDevice {
   plan_id?: string | null;
   source_id?: string | null;
   package_type?: 'iptv' | 'p2p' | null;
+  rep_id?: string | null;
   created_at: string;
   last_seen_at?: string | null;
   current_content?: string | null;
@@ -185,8 +186,8 @@ export async function repLogin(repNumber: string, password: string): Promise<Rep
   try {
     const data = await callPublic('repLogin', { repNumber, password });
     if (!data?.ok) return { ok: false, error: data?.error ?? 'Código ou senha inválidos' };
-    // Store credentials for subsequent rep actions
-    if (data.rep?.id) setRepCredentials(data.rep.id, password);
+    if (!data.rep?.id) return { ok: false, error: 'Resposta incompleta ao entrar no painel.' };
+    // The provider stores credentials only after checking the current login generation.
     return { ok: true, rep: data.rep };
   } catch (e: any) {
     return { ok: false, error: e.message };
@@ -203,14 +204,36 @@ export async function validateRepCode(repNumber: string): Promise<{ ok: boolean;
   }
 }
 
+export interface RepPanelSnapshot {
+  devices: RepDevice[];
+  rep: Representative;
+  syncedAt: string;
+}
+
+export async function getRepPanelSnapshot(): Promise<RepPanelSnapshot> {
+  const expectedRepId = _repId;
+  const data = await callRep('getRepPanelSnapshot');
+  if (!expectedRepId || data.rep?.id !== expectedRepId || !Array.isArray(data.devices) ||
+      data.devices.some((device: { rep_id?: string }) => device.rep_id !== expectedRepId) ||
+      !Number.isFinite(Number(data.rep.credits)) || typeof data.syncedAt !== 'string' ||
+      !Number.isFinite(new Date(data.syncedAt).getTime())) {
+    throw new Error('Resposta incompleta ao sincronizar os MACs do representante.');
+  }
+  return { devices: data.devices, rep: { ...data.rep, credits: Number(data.rep.credits) }, syncedAt: data.syncedAt };
+}
+
 export async function getRepDevices(repId?: string): Promise<RepDevice[]> {
   const data = await callRep('getRepDevices', repId ? { repId } : {});
-  return data?.devices ?? [];
+  if (!Array.isArray(data.devices)) throw new Error('Resposta incompleta ao carregar os clientes.');
+  return data.devices;
 }
 
 export async function getRepSources(repId?: string): Promise<Source[]> {
   const data = await callRep('getRepSources', repId ? { repId } : {});
-  return data?.sources ?? [];
+  if (!Array.isArray(data.sources) || data.sources.some((source: Source) => source.rep_id !== _repId)) {
+    throw new Error('Resposta incompleta ao carregar as fontes do representante.');
+  }
+  return data.sources;
 }
 
 export async function activateRepDevice(payload: {

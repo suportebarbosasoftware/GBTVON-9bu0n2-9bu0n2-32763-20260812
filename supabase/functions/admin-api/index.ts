@@ -93,7 +93,8 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (error || !rep) return json({ ok: false, error: 'Representante não encontrado' });
       if (rep.password_hash !== password) return json({ ok: false, error: 'Senha incorreta' });
-      return json({ ok: true, rep });
+      const { password_hash: _passwordHash, ...profile } = rep;
+      return json({ ok: true, rep: profile });
     }
 
     if (action === 'validateRepCode') {
@@ -143,14 +144,22 @@ Deno.serve(async (req) => {
 
     // ── Helper functions ──────────────────────────────────────────────────────
 
-    async function validateRep(repId: string, repPassword: string): Promise<boolean> {
-      const { data: rep } = await supabase
+    async function resolveRep(repId: string, repPassword: string) {
+      if (typeof repId !== 'string' || !repId || typeof repPassword !== 'string' || !repPassword) return null;
+      const { data: rep, error } = await supabase
         .from('representatives')
-        .select('password_hash, active')
+        .select('id, rep_number, name, credits, active, notes, created_at, updated_at, password_hash')
         .eq('id', repId)
         .eq('active', true)
         .maybeSingle();
-      return !!rep && rep.password_hash === repPassword;
+      if (error) throw error;
+      if (!rep || rep.password_hash !== repPassword) return null;
+      const { password_hash: _passwordHash, ...profile } = rep;
+      return profile;
+    }
+
+    async function validateRep(repId: string, repPassword: string): Promise<boolean> {
+      return (await resolveRep(repId, repPassword)) !== null;
     }
 
     function computeCreditCost(days: number): number {
@@ -159,36 +168,34 @@ Deno.serve(async (req) => {
 
     // ── Rep Panel actions ─────────────────────────────────────────────────────
 
-    if (action === 'getRepDevices') {
+    if (action === 'getRepPanelSnapshot' || action === 'getRepDevices') {
       const { repId, repPassword } = body;
-      if (!await validateRep(repId, repPassword)) return authError();
-      const { data: devices, error } = await supabase
+      const rep = await resolveRep(repId, repPassword);
+      if (!rep) return authError();
+      // One authenticated, paginated MAC read. Source availability never blocks this response.
+      const devices = await readPanelRows(() => supabase
         .from('devices')
         .select('*, sources(name)')
-        .eq('rep_id', repId)
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      return json({ devices: devices || [] });
+        .eq('rep_id', rep.id)
+        .order('created_at', { ascending: false }).order('id', { ascending: false }));
+      return json({ devices, rep, syncedAt: new Date().toISOString() });
     }
 
     if (action === 'getRepSources') {
       const { repId, repPassword } = body;
       if (!await validateRep(repId, repPassword)) return authError();
-      const { data: sources, error } = await supabase
+      const sources = await readPanelRows(() => supabase
         .from('sources')
         .select('*')
         .eq('rep_id', repId)
-        .eq('active', true);
-      if (error) throw error;
-      const withCount = await Promise.all((sources || []).map(async (s: any) => {
-        const { count } = await supabase
-          .from('devices')
-          .select('*', { count: 'exact', head: true })
-          .eq('source_id', s.id)
-          .eq('activated', true);
-        return { ...s, active_macs: count || 0 };
-      }));
-      return json({ sources: withCount });
+        .eq('active', true).order('id'));
+      if (!sources.length) return json({ sources: [] });
+      // Count this representative's MACs in one batch, rather than one request per source.
+      const activeRows = await readPanelRows(() => supabase.from('devices')
+        .select('id, source_id').eq('rep_id', repId).eq('activated', true)
+        .in('source_id', sources.map(source => source.id)).order('id'));
+      const counts = countPanelRelations(activeRows, 'source_id');
+      return json({ sources: sources.map(source => ({ ...source, active_macs: counts.get(source.id) ?? 0 })) });
     }
 
     if (action === 'activateRepDevice') {
