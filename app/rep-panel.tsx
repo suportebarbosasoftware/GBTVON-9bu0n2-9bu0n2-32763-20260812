@@ -323,7 +323,7 @@ export default function RepPanelScreen() {
   }
 
   async function handleDeactivate() {
-    if (!selectedDevice) return;
+    if (!selectedDevice || actionLoading) return;
     showAlert('Desativar', `Desativar ${selectedDevice.client_name || selectedDevice.mac_address}?`, [
       { text: 'Cancelar', style: 'cancel' },
       {
@@ -386,7 +386,7 @@ export default function RepPanelScreen() {
   }
 
   async function handleRenew() {
-    if (!selectedDevice) return;
+    if (!selectedDevice || renewLoading) return;
     const daysNum = parseInt(renewDays);
     if (isNaN(daysNum) || daysNum < 1) { showAlert('Dias inválidos'); return; }
     const creditCost = Math.round((daysNum / 30) * 100) / 100;
@@ -1507,9 +1507,10 @@ export default function RepPanelScreen() {
                 </Pressable>
                 <Pressable style={[styles.modalActionBtn, { flex: 1, backgroundColor: '#4CAF50' }, renewLoading && { opacity: 0.6 }]} onPress={handleRenew} disabled={renewLoading}>
                   {renewLoading
-                    ? <ActivityIndicator color="#fff" size="small" />
-                    : <><Ionicons name="refresh-circle-outline" size={16} color="#fff" /><Text style={styles.modalActionText}> Renovar</Text></>
+                    ? <ActivityIndicator color={Colors.textPrimary} size="small" />
+                    : <Ionicons name="refresh-circle-outline" size={16} color={Colors.textPrimary} />
                   }
+                  <Text style={styles.modalActionText}>{renewLoading ? ' Renovando...' : ' Renovar'}</Text>
                 </Pressable>
               </View>
             </View>

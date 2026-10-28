@@ -311,7 +311,24 @@ export async function changeRepDeviceSource(deviceId: string, sourceId: string):
  * Renew a device's subscription by adding `days` to its current expiry.
  * Consumes proportional credits: days/30 (e.g. 15d = 0.50 cr, 32d = 1.07 cr).
  */
-export async function renewRepDevice(deviceId: string, days: number): Promise<{ credit_cost: number; new_expiry: string }> {
+export interface RepRenewalResult {
+  credit_cost: number;
+  new_expiry: string;
+  device: RepDevice;
+  rep: Representative;
+}
+
+/** Renewal confirms expiry, MAC status and credits together; no second snapshot is required. */
+export async function renewRepDevice(deviceId: string, days: number): Promise<RepRenewalResult> {
   const data = await callRep('renewRepDevice', { deviceId, days });
-  return { credit_cost: data?.credit_cost ?? 0, new_expiry: data?.new_expiry ?? '' };
+  const device = confirmedRepDevice(data, deviceId);
+  const expectedCost = Math.round((days / 30) * 100) / 100;
+  if (data.rep?.id !== device.rep_id || !Number.isFinite(Number(data.rep?.credits)) ||
+      !Number.isFinite(Number(data.credit_cost)) || Number(data.credit_cost) !== expectedCost ||
+      typeof data.new_expiry !== 'string' || !Number.isFinite(new Date(data.new_expiry).getTime()) ||
+      !device.activated || new Date(device.expires_at || '').getTime() !== new Date(data.new_expiry).getTime()) {
+    throw new Error('A confirmação da renovação está incompleta. Atualize o MAC antes de repetir.');
+  }
+  return { credit_cost: Number(data.credit_cost), new_expiry: data.new_expiry, device,
+    rep: { ...data.rep, credits: Number(data.rep.credits) } };
 }

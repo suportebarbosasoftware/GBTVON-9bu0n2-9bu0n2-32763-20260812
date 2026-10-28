@@ -17,7 +17,7 @@ export interface RepPanelContextType {
   loadSources: (force?: boolean) => Promise<void>;
   loadData: (showLoader?: boolean) => Promise<void>;
   refresh: () => Promise<void>; refreshAfterChange: () => Promise<void>;
-  commitDeviceChange: (device: RepDevice | null, removedIds?: string[]) => void;
+  commitDeviceChange: (device: RepDevice | null, removedIds?: string[], updatedRep?: Representative) => void;
   reset: () => void;
 }
 export const RepPanelContext = createContext<RepPanelContextType | undefined>(undefined);
@@ -106,10 +106,15 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
     return promise;
   }, [reportError]);
 
-  const commitDeviceChange = useCallback((device: RepDevice | null, removedIds: string[] = []) => {
+  const commitDeviceChange = useCallback((device: RepDevice | null, removedIds: string[] = [], updatedRep?: Representative) => {
     if (!repId.current || (device && device.rep_id !== repId.current)) return;
+    if (updatedRep && (updatedRep.id !== repId.current || !Number.isFinite(Number(updatedRep.credits)))) return;
     clientRevision.current += 1; sourceRevision.current += 1; sourcesUpdatedAt.current = 0;
     setDevices(previous => applyConfirmedDeviceChange(previous, device, removedIds));
+    if (updatedRep) {
+      setRep(previous => previous?.id === updatedRep.id
+        ? { ...previous, ...updatedRep, credits: Number(updatedRep.credits) } : previous);
+    }
   }, []);
   const loadData = useCallback(async (showLoader = false): Promise<void> => {
     await Promise.allSettled([syncClients(!showLoader, true), loadSources(true)]);

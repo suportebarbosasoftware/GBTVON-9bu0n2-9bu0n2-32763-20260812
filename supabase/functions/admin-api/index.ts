@@ -122,6 +122,30 @@ async function handleBody(body: any): Promise<Response> {
     return json({ ok: true, admin: { id: adm.id, name: adm.name, username: adm.username, parent_id: adm.parent_id }, sessionToken: token });
   }
 
+  // Critical representative actions authenticate, persist and confirm in ONE database round trip.
+  // The RPC is service-role-only and performs the same representative ownership checks internally.
+  if (action === 'renewRepDevice' || action === 'deactivateRepDevice') {
+    const days = action === 'renewRepDevice' ? Number(body.days) : null;
+    if (action === 'renewRepDevice' && (!Number.isInteger(days) || Number(days) < 1)) {
+      return json({ error: 'Prazo inválido.', code: 'invalid_period' }, 400);
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await dataOf(supabase.rpc('gbtvon_rep_device_action', {
+        p_action: action,
+        p_rep_id: typeof body.repId === 'string' && body.repId ? body.repId : null,
+        p_rep_password: typeof body.repPassword === 'string' ? body.repPassword : null,
+        p_device_id: typeof body.deviceId === 'string' && body.deviceId ? body.deviceId : null,
+        p_days: days,
+      }));
+      if (result?.error) return json({ error: result.error, code: result.code }, result.status || 500);
+      if (!result?.success || !result.device) throw new Error('O banco não confirmou a operação.');
+      return json(result);
+    } finally {
+      console.log('[panel-edge] database', action, 'elapsed_ms', Date.now() - startedAt);
+    }
+  }
+
   // Representative requests do not depend on an administrative session.
   const repActions = new Set(['getRepPanelSnapshot', 'getRepDevices', 'getRepSources', 'activateRepDevice', 'activateRepTest',
     'deactivateRepDevice', 'blockRepDevice', 'unblockRepDevice', 'deleteRepDevice', 'renewRepDevice',
@@ -201,23 +225,6 @@ async function handleBody(body: any): Promise<Response> {
       return json({ success: true, credit_cost: cost });
     }
     if (action === 'deleteRepDevice') return confirmedDeletion(supabase.from('devices').delete().eq('id', deviceId).eq('rep_id', repId), true);
-    if (action === 'renewRepDevice') {
-      const days = Number(body.days);
-      if (!deviceId || !Number.isInteger(days) || days < 1) throw new Error('Prazo inválido');
-      const cost = Math.round((days / 30) * 100) / 100;
-      if (Number(rep.credits) < cost) throw new Error(`Créditos insuficientes. Esta renovação custa ${cost.toFixed(2)}.`);
-      const device = await dataOf(supabase.from('devices').select('id, expires_at, mac_address').eq('id', deviceId).eq('rep_id', repId).maybeSingle());
-      if (!device) throw new Error('Dispositivo não encontrado na sua rede');
-      const expiry = device.expires_at && new Date(device.expires_at).getTime() > Date.now() ? new Date(device.expires_at) : new Date();
-      expiry.setDate(expiry.getDate() + days);
-      const now = new Date().toISOString();
-      await dataOf(supabase.from('devices').update({ expires_at: expiry.toISOString(), activated: true,
-        blocked_reason: null, block_reason_detail: null, blocked_at: null, updated_at: now }).eq('id', deviceId).eq('rep_id', repId));
-      await dataOf(supabase.from('representatives').update({ credits: Number(rep.credits) - cost, updated_at: now }).eq('id', repId));
-      await dataOf(supabase.from('credit_transactions').insert({ rep_id: repId, amount: Math.ceil(cost), type: 'consume',
-        description: `Renovação ${days}d — ${device.mac_address} (custo real: ${cost.toFixed(2)} cr.)`, device_mac: device.mac_address, days }));
-      return json({ success: true, new_expiry: expiry.toISOString(), credit_cost: cost });
-    }
     const now = new Date().toISOString();
     let updates: Record<string, any>;
     if (action === 'blockRepDevice') updates = { activated: false, blocked_reason: 'manual',

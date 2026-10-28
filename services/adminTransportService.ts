@@ -1,6 +1,7 @@
 /** Bounded requests, outage backoff for polling, and accurate outcome reporting. */
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
+import { createPanelRequestGate } from '@/services/panelRequestGate';
 
 export class AdminApiError extends Error {
   readonly status: number;
@@ -20,6 +21,8 @@ export function isAdminAuthError(error: unknown): boolean {
 let failures = 0;
 let retryReadsAt = 0;
 const pendingReads = new Map<string, Promise<any>>();
+const pendingWrites = new Map<string, Promise<any>>();
+const requestGate = createPanelRequestGate();
 const loginActions = new Set(['rootAdminLogin', 'subAdminLogin', 'repLogin']);
 
 function timeoutMessage(action: string, readOnly: boolean): string {
@@ -67,6 +70,7 @@ async function invokeOnce(body: Record<string, unknown>, readOnly: boolean): Pro
     if (!data || typeof data !== 'object') throw new AdminApiError('Resposta inválida do servidor.', 0, 'invalid_response');
     if (data.error && data.ok !== false) throw new AdminApiError(String(data.error), 0, data.code || 'operation_failed');
     failures = 0; retryReadsAt = 0;
+    console.info('[panel-request]', action, Date.now() - startedAt, 'response_received');
     return data;
   } catch (error) {
     if (error instanceof AdminApiError && (['request_timeout', 'network_error'].includes(error.code) || error.status >= 500 || error.status === 499)) {
@@ -83,15 +87,25 @@ async function invokeOnce(body: Record<string, unknown>, readOnly: boolean): Pro
 
 export function invokeAdminApi(body: Record<string, unknown>): Promise<any> {
   const action = String(body.action ?? '');
-  const readOnly = action.startsWith('get_') || action.startsWith('get');
-  if (!readOnly) return invokeOnce(body, false); // Login and writes are never queued behind polling or automatically repeated.
+  const readOnly = action.startsWith('get') || action === 'lookupDeviceByMac' || action === 'validateRepCode';
   const key = JSON.stringify(body);
+  if (!readOnly) {
+    // Repeated taps during an identical in-flight action share its confirmation, not a second renewal/debit.
+    const pending = pendingWrites.get(key);
+    if (pending) return pending;
+    // Writes start immediately. NEW polling reads wait; existing reads never block an action.
+    const request = requestGate.runWrite(() => invokeOnce(body, false)).finally(() => { pendingWrites.delete(key); });
+    pendingWrites.set(key, request);
+    return request;
+  }
   const pending = pendingReads.get(key);
   if (pending) return pending;
-  if (Date.now() < retryReadsAt) {
-    return Promise.reject(new AdminApiError('O servidor está sem resposta. A próxima consulta será feita automaticamente; login e ações continuam disponíveis.', 0, 'server_backoff'));
-  }
-  const request = invokeOnce(body, true).finally(() => { pendingReads.delete(key); });
+  const request = requestGate.runRead(() => {
+    if (Date.now() < retryReadsAt) {
+      return Promise.reject(new AdminApiError('O servidor está sem resposta. A próxima consulta será feita automaticamente; login e ações continuam disponíveis.', 0, 'server_backoff'));
+    }
+    return invokeOnce(body, true);
+  }).finally(() => { pendingReads.delete(key); });
   pendingReads.set(key, request);
   return request;
 }

@@ -241,6 +241,7 @@ export default function AdminScreen() {
   }
 
   async function handleSaveDevice() {
+    if (deviceActionLoading) return;
     if (!selectedDevice || !selectedPlanId) { showAlert('Selecione um plano'); return; }
     let expiresAt: string | null = null;
     if (deviceExpiryInput.trim()) {
@@ -269,7 +270,7 @@ export default function AdminScreen() {
   }
 
   async function handleDeactivateDevice() {
-    if (!selectedDevice) return;
+    if (!selectedDevice || deviceActionLoading) return;
     showAlert('Desativar', `Desativar ${selectedDevice.email}?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Desativar', style: 'destructive', onPress: async () => {

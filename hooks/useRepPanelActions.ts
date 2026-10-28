@@ -21,7 +21,13 @@ export function useRepPanelActions() {
     return {
       activateRepDevice: withReconciliation(repApi.activateRepDevice),
       activateRepTest: withReconciliation(repApi.activateRepTest),
-      renewRepDevice: withReconciliation(repApi.renewRepDevice),
+      renewRepDevice: async (deviceId: string, days: number): Promise<repApi.RepRenewalResult> => {
+        try {
+          const result = await repApi.renewRepDevice(deviceId, days);
+          commitDeviceChange(result.device, [], result.rep);
+          return result;
+        } catch (error) { void refreshAfterChange(); throw error; }
+      },
       deactivateRepDevice: withDevice(repApi.deactivateRepDevice),
       blockRepDevice: withDevice(repApi.blockRepDevice),
       unblockRepDevice: withDevice(repApi.unblockRepDevice),
