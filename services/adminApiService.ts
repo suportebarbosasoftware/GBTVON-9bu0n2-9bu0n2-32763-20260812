@@ -5,6 +5,7 @@
 import { getSupabaseClient } from '@/template';
 import { invokeAdminApi } from '@/services/adminTransportService';
 import { getAdminAuthPayload } from '@/services/adminSessionService';
+import type { Representative, Source } from '@/services/repApiService';
 export { setAdminPassword, setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession } from '@/services/adminSessionService';
 
 export interface SubAdmin {
@@ -119,14 +120,24 @@ export interface AdminPanelSnapshot {
   stats: AdminStats;
   watchingNow: WatchingDevice[];
   syncedAt: string;
+  plans?: Plan[];
+  reps?: Representative[];
+  sources?: Source[];
+  metadataErrors?: Partial<Record<'plans' | 'reps' | 'sources', string>>;
 }
 
-/** A single scoped database snapshot keeps MAC lists and dashboard totals in sync. */
-export async function getPanelSnapshot(refresh = false): Promise<AdminPanelSnapshot> {
-  const result = await call('get_panel_snapshot', undefined, refresh);
+/** Fetch clients and due metadata through one authenticated edge request, not separate tab requests. */
+export async function getPanelSnapshot(refresh = false, includeMetadata = false): Promise<AdminPanelSnapshot> {
+  const result = await callFlat('get_panel_snapshot', { includeMetadata }, refresh);
   if (!Array.isArray(result.devices) || !Array.isArray(result.watchingNow) || !result.stats ||
       typeof result.syncedAt !== 'string' || !Number.isFinite(new Date(result.syncedAt).getTime())) {
     throw new Error('Resposta incompleta ao atualizar os MACs. Os dados anteriores foram mantidos.');
+  }
+  for (const key of ['plans', 'reps', 'sources'] as const) {
+    if (result[key] !== undefined && !Array.isArray(result[key])) {
+      delete result[key];
+      result.metadataErrors = { ...result.metadataErrors, [key]: 'Resposta incompleta. A consulta será repetida automaticamente.' };
+    }
   }
   return result;
 }

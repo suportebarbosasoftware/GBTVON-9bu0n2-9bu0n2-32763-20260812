@@ -191,7 +191,7 @@ export default function AdminScreen() {
 
   useEffect(() => {
     if (!authenticated) return;
-    // Only the visible tab requests secondary data; these requests never pause MAC synchronization.
+    // Core data is prefetched on entry. Tab changes reuse it; ancillary sections load on demand.
     if (activeTab === 'devices' || activeTab === 'plans' || activeTab === 'add') void loadSection('plans');
     if (activeTab === 'reps' || activeTab === 'sources') void loadSection('reps');
     if (activeTab === 'sources') void loadSection('sources');
@@ -709,7 +709,7 @@ export default function AdminScreen() {
         {activeTab === 'plans' && (
           <View style={styles.section}>
             <Pressable style={styles.createBtn} onPress={openCreatePlan}><Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Criar novo plano</Text></Pressable>
-            {plans.length === 0 ? <View style={styles.emptyState}><Ionicons name="layers-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.plans ? 'Nenhum plano criado' : 'Planos ainda não carregados. Atualize o painel.'}</Text></View>
+            {plans.length === 0 ? <View style={styles.emptyState}><Ionicons name="layers-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.plans ? 'Nenhum plano criado' : loadingSections.plans ? 'Carregando planos...' : 'Planos indisponíveis. A consulta será repetida automaticamente.'}</Text></View>
               : plans.map(plan => (
                 <View key={plan.id} style={styles.planCard}>
                   <View style={styles.planCardHeader}>
@@ -739,7 +739,7 @@ export default function AdminScreen() {
               <Ionicons name="person-add-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Novo Representante</Text>
             </Pressable>
             {reps.length === 0 ? (
-              <View style={styles.emptyState}><Ionicons name="people-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.reps ? 'Nenhum representante cadastrado' : 'Representantes ainda não carregados. Atualize o painel.'}</Text></View>
+              <View style={styles.emptyState}><Ionicons name="people-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.reps ? 'Nenhum representante cadastrado' : loadingSections.reps ? 'Carregando representantes...' : 'Representantes indisponíveis. A consulta será repetida automaticamente.'}</Text></View>
             ) : reps.map(r => (
               <View key={r.id} style={styles.planCard}>
                 <View style={styles.planCardHeader}>
@@ -798,7 +798,7 @@ export default function AdminScreen() {
                 <Ionicons name="add-circle-outline" size={18} color="#fff" /><Text style={styles.createBtnText}>  Nova Fonte</Text>
               </Pressable>
               {sources.length === 0 ? (
-                <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.sources ? 'Nenhuma fonte criada' : 'Fontes ainda não carregadas. Atualize o painel.'}</Text></View>
+                <View style={styles.emptyState}><Ionicons name="server-outline" size={40} color={Colors.textMuted} /><Text style={styles.emptyText}>{loaded.sources ? 'Nenhuma fonte criada' : loadingSections.sources ? 'Carregando fontes...' : 'Fontes indisponíveis. A consulta será repetida automaticamente.'}</Text></View>
               ) : groups.map(([key, group]) => {
                 const isExpanded = expandedSourceReps.has(key);
                 const totalMacs = group.sources.reduce((s, src) => s + (src.active_macs ?? 0), 0);

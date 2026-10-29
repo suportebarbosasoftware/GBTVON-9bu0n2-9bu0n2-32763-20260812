@@ -19,9 +19,9 @@ export function useRepPanelPolling(
       if (disposed || !active || running) return;
       if (timer) { clearTimeout(timer); timer = null; }
       running = true;
-      // Entry/resume refresh immediately; subsequent cycles respect metadata freshness.
-      void loadSources(force);
-      try { await syncClients(true, force); }
+      // Sources and clients now share one request. Entry/resume includes sources;
+      // subsequent snapshots include them automatically whenever their metadata is due.
+      try { await (force ? loadSources(true) : syncClients(true)); }
       catch { /* Keep the automatic loop alive after a failed read. */ }
       finally {
         running = false;

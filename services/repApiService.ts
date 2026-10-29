@@ -217,18 +217,23 @@ export interface RepPanelSnapshot {
   devices: RepDevice[];
   rep: Representative;
   syncedAt: string;
+  sources?: Source[];
+  sourceError?: string;
 }
 
-export async function getRepPanelSnapshot(refresh = false): Promise<RepPanelSnapshot> {
+export async function getRepPanelSnapshot(refresh = false, includeSources = false): Promise<RepPanelSnapshot> {
   const expectedRepId = _repId;
-  const data = await callRep('getRepPanelSnapshot', undefined, refresh);
+  const data = await callRep('getRepPanelSnapshot', { includeSources }, refresh);
   if (!expectedRepId || data.rep?.id !== expectedRepId || !Array.isArray(data.devices) ||
       data.devices.some((device: { rep_id?: string }) => device.rep_id !== expectedRepId) ||
       !Number.isFinite(Number(data.rep.credits)) || typeof data.syncedAt !== 'string' ||
       !Number.isFinite(new Date(data.syncedAt).getTime())) {
     throw new Error('Resposta incompleta ao sincronizar os MACs do representante.');
   }
-  return { devices: data.devices, rep: { ...data.rep, credits: Number(data.rep.credits) }, syncedAt: data.syncedAt };
+  const validSources = Array.isArray(data.sources) && data.sources.every((source: Source) => source.rep_id === expectedRepId);
+  return { devices: data.devices, rep: { ...data.rep, credits: Number(data.rep.credits) }, syncedAt: data.syncedAt,
+    ...(validSources ? { sources: data.sources } : {}),
+    sourceError: data.sourceError || (data.sources !== undefined && !validSources ? 'Resposta incompleta ao carregar suas fontes.' : undefined) };
 }
 
 export async function getRepDevices(repId?: string): Promise<RepDevice[]> {

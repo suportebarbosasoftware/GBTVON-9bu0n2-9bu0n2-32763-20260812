@@ -15,12 +15,19 @@ export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, o
   const hasMessage = loading || !!error || metadataLoading;
   const updatedDate = lastSyncedAt ? new Date(lastSyncedAt) : null;
   const updatedTime = updatedDate && Number.isFinite(updatedDate.getTime()) ? updatedDate.toLocaleTimeString('pt-BR') : null;
+  // Healthy background synchronization should not occupy a full card above the clients.
+  if (!hasMessage) return updatedTime ? (
+    <View style={styles.statusLine}>
+      <Ionicons name="checkmark-circle-outline" size={16} color={Colors.success} />
+      <Text style={styles.statusText}>Atualizado automaticamente · {updatedTime}</Text>
+    </View>
+  ) : null;
   return (
     <View style={styles.panel} accessibilityLiveRegion="polite">
       {hasMessage ? (
         <View style={styles.messageRow}>
           {error ? <Ionicons name="alert-circle-outline" size={20} color={Colors.warning} /> : <ActivityIndicator size="small" color={Colors.primary} />}
-          <Text style={styles.message}>{error || (loading ? 'Sincronizando MACs e clientes...' : 'Carregando informações desta aba. A atualização dos MACs continua independente.')}</Text>
+          <Text style={styles.message}>{error || (loading ? 'Carregando clientes...' : 'Carregando fontes e informações do painel...')}</Text>
         </View>
       ) : null}
       {updatedTime ? (
@@ -44,6 +51,8 @@ export const AdminSyncStatus = memo(function AdminSyncStatus({ loading, error, o
   );
 });
 const styles = StyleSheet.create({
+  statusLine: { marginHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  statusText: { flex: 1, color: Colors.textMuted, fontSize: FontSize.md, includeFontPadding: false },
   panel: { margin: Spacing.md, padding: Spacing.md, backgroundColor: Colors.bgCard, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border, gap: Spacing.sm },
   messageRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
   message: { flex: 1, color: Colors.textSecondary, fontSize: FontSize.md, lineHeight: 26, includeFontPadding: false },

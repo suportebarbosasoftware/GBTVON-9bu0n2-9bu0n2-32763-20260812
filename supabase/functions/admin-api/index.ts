@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 import { issueRootSession, verifyRootSession } from '../_shared/adminSession.ts';
-import { readPanelRows, buildPanelOverview, countPanelRelations } from '../_shared/adminPanelData.ts';
+import { readPanelRows, readPanelMetadata, buildPanelOverview, countPanelRelations } from '../_shared/adminPanelData.ts';
 import { createPanelDatabaseFetch } from '../_shared/panelDatabaseFetch.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
@@ -72,6 +72,15 @@ async function handleBody(body: any): Promise<Response> {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     ...(boundedRead ? { global: { fetch: createPanelDatabaseFetch(Date.now() + 14000) } } : {}),
   });
+
+  function metadataClient() {
+    // Optional source/plan metadata has a shorter deadline than clients. A stalled secondary
+    // query cannot hold a usable client response until the full 14-second read deadline.
+    return createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { fetch: createPanelDatabaseFetch(Date.now() + 4000) },
+    });
+  }
 
   async function resolveRep(repId: string, password: string): Promise<any | null> {
     if (typeof repId !== 'string' || !repId || typeof password !== 'string' || !password) return null;
@@ -198,13 +207,22 @@ async function handleBody(body: any): Promise<Response> {
         const counts = countPanelRelations(rows, 'source_id');
         return json({ sources: sources.map(source => ({ ...source, active_macs: counts.get(source.id) ?? 0 })) });
       }
-      const [rep, devices] = await Promise.all([
+      const includeSources = action === 'getRepPanelSnapshot' && body.includeSources === true;
+      const sourceClient = includeSources ? metadataClient() : null;
+      const [rep, devices, metadata] = await Promise.all([
         resolveRep(repId, repPassword),
         readPanelRows(() => supabase.from('devices').select('*, sources(name)').eq('rep_id', repId)
           .order('created_at', { ascending: false }).order('id', { ascending: false })),
+        readPanelMetadata(sourceClient ? {
+          sources: () => readPanelRows(() => sourceClient.from('sources').select('*').eq('rep_id', repId).eq('active', true).order('id')),
+        } : {}),
       ]);
       if (!rep) return authError();
-      return json({ devices, rep, syncedAt: new Date().toISOString() });
+      const counts = countPanelRelations(devices.filter(device => device.activated), 'source_id');
+      return json({ devices, rep, syncedAt: new Date().toISOString(),
+        ...(metadata.values.sources ? { sources: metadata.values.sources.map((source: any) => ({ ...source, active_macs: counts.get(source.id) ?? 0 })) } : {}),
+        ...(metadata.errors.sources ? { sourceError: metadata.errors.sources } : {}),
+      });
     }
     const rep = await resolveRep(repId, repPassword);
     if (!rep) return authError();
@@ -294,10 +312,43 @@ async function handleBody(body: any): Promise<Response> {
       .order('created_at', { ascending: false }).order('id', { ascending: false })));
   }
   if (action === 'get_panel_snapshot' || action === 'get_stats') {
-    const [devices, planResult] = await Promise.all([panelDevices(), scopePlans(supabase.from('plans').select('id', { count: 'exact', head: true }).eq('active', true))]);
+    const includeMetadata = action === 'get_panel_snapshot' && body.includeMetadata === true;
+    const meta = includeMetadata ? metadataClient() : null;
+    // Start all core reads together. Sources and representatives are ready on first opening,
+    // not fetched only after their tabs are selected. All queries retain the resolved scope.
+    const readers: Record<string, () => Promise<any>> = meta ? {
+      plans: () => readPanelRows(() => scopePlans(meta.from('plans').select('*').order('created_at', { ascending: false }).order('id'))),
+      sources: () => readPanelRows(() => scopeSources(meta.from('sources').select('*, representatives(name)').order('created_at', { ascending: false }).order('id'))),
+      reps: async () => {
+        const reps = await readPanelRows(() => scopeReps(meta.from('representatives')
+          .select('id, rep_number, name, credits, active, notes, created_at, updated_at, admin_id').order('rep_number').order('id')));
+        if (!reps.length) return [];
+        const consumed = await readPanelRows(() => meta.from('credit_transactions').select('id, rep_id, amount')
+          .in('rep_id', reps.map(rep => rep.id)).eq('type', 'consume').order('id'));
+        const totals = new Map<string, number>();
+        for (const row of consumed) totals.set(row.rep_id, (totals.get(row.rep_id) ?? 0) + Number(row.amount));
+        return reps.map(rep => ({ ...rep, total_consumed: totals.get(rep.id) ?? 0 }));
+      },
+    } : {};
+    const [devices, planResult, metadata] = await Promise.all([
+      panelDevices(),
+      scopePlans(supabase.from('plans').select('id', { count: 'exact', head: true }).eq('active', true)),
+      readPanelMetadata(readers),
+    ]);
     if (planResult.error) throw planResult.error;
     const overview = buildPanelOverview(devices, planResult.count ?? 0);
-    return action === 'get_stats' ? json({ stats: overview.stats }) : json({ devices, ...overview });
+    if (action === 'get_stats') return json({ stats: overview.stats });
+    const activeDevices = devices.filter(device => device.activated);
+    for (const [section, field] of [['plans', 'plan_id'], ['sources', 'source_id'], ['reps', 'rep_id']]) {
+      const rows = metadata.values[section];
+      if (!rows) continue;
+      const counts = countPanelRelations(activeDevices, field);
+      metadata.values[section] = rows.map((row: any) => ({ ...row,
+        [section === 'reps' ? 'active_devices' : 'active_macs']: counts.get(row.id) ?? 0,
+        ...(section === 'sources' ? { rep_name: row.representatives?.name } : {}),
+      }));
+    }
+    return json({ devices, ...overview, ...metadata.values, metadataErrors: metadata.errors });
   }
   if (action === 'get_devices') return json({ devices: await panelDevices() });
   if (action === 'get_watching_now') {

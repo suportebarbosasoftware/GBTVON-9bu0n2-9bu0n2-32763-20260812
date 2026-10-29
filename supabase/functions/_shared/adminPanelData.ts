@@ -12,6 +12,22 @@ export async function readPanelRows(createQuery: () => any): Promise<any[]> {
   }
 }
 
+/** Isolate optional metadata failures: an unavailable source must not discard confirmed clients. */
+export async function readPanelMetadata(readers: Record<string, () => Promise<any>>): Promise<{ values: Record<string, any>; errors: Record<string, string> }> {
+  const entries = Object.entries(readers);
+  const results = await Promise.allSettled(entries.map(([, read]) => Promise.resolve().then(read)));
+  const values: Record<string, any> = {};
+  const errors: Record<string, string> = {};
+  results.forEach((result, index) => {
+    const name = entries[index][0];
+    if (result.status === 'fulfilled') values[name] = result.value;
+    else errors[name] = /panel_database_timeout/i.test(String(result.reason?.message ?? ''))
+      ? 'A consulta demorou para responder. Uma nova tentativa será feita automaticamente.'
+      : 'Não foi possível carregar esta informação. Uma nova tentativa será feita automaticamente.';
+  });
+  return { values, errors };
+}
+
 interface OverviewDevice {
   activated: boolean | null;
   blocked_reason: string | null;

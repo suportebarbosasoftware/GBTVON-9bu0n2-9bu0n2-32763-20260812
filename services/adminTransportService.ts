@@ -1,9 +1,8 @@
-/** Bounded requests, outage backoff for polling, and accurate outcome reporting. */
+/** Bounded, deduplicated requests. Automatic polling has no additional outage cooldown. */
 import { getSupabaseClient } from '@/template';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 import { createPanelRequestGate } from '@/services/panelRequestGate';
 import { getPanelScopeKey, publishPanelMutation } from '@/services/panelChangeService';
-import { createPanelReadBackoff } from '@/services/panelReadBackoff';
 
 export class AdminApiError extends Error {
   readonly status: number;
@@ -20,7 +19,6 @@ export function isAdminAuthError(error: unknown): boolean {
   return error instanceof AdminApiError && error.status === 401;
 }
 
-const readBackoff = createPanelReadBackoff();
 const pendingReads = new Map<string, Promise<any>>();
 const pendingWrites = new Map<string, Promise<any>>();
 const requestGate = createPanelRequestGate();
@@ -71,13 +69,9 @@ async function invokeOnce(body: Record<string, unknown>, readOnly: boolean, scop
     }
     if (!data || typeof data !== 'object') throw new AdminApiError('Resposta inválida do servidor.', 0, 'invalid_response');
     if (data.error && data.ok !== false) throw new AdminApiError(String(data.error), 0, data.code || 'operation_failed');
-    if (!loginActions.has(action)) readBackoff.succeeded(scopeKey);
     console.info('[panel-request]', action, requestId, Date.now() - startedAt, 'response_received');
     return data;
   } catch (error) {
-    if (!loginActions.has(action) && error instanceof AdminApiError && (['request_timeout', 'network_error'].includes(error.code) || error.status >= 500 || error.status === 499)) {
-      readBackoff.failed(scopeKey);
-    }
     // Diagnostics contain only action, duration and error class, never passwords, MACs or tokens.
     console.warn('[panel-request]', action, requestId, Date.now() - startedAt, error instanceof AdminApiError ? error.code : 'unexpected_error');
     throw error;
@@ -107,12 +101,10 @@ export function invokeAdminApi(body: Record<string, unknown>, options: { refresh
   }
   const pending = pendingReads.get(key);
   if (pending) return pending;
-  const request = requestGate.runRead(() => {
-    if (!options.refresh && readBackoff.shouldDelay(scopeKey)) {
-      return Promise.reject(new AdminApiError('O servidor está sem resposta. A próxima consulta será feita automaticamente; login e ações continuam disponíveis.', 0, 'server_backoff'));
-    }
-    return invokeOnce(body, true, scopeKey);
-  }, scopeKey).finally(() => { pendingReads.delete(key); });
+  // The focused polling hook already waits ten seconds after completion and deduplicates reads.
+  // Do not add another 10–60 second cooldown that leaves clients/sources missing after a failure.
+  const request = requestGate.runRead(() => invokeOnce(body, true, scopeKey), scopeKey)
+    .finally(() => { pendingReads.delete(key); });
   pendingReads.set(key, request);
   return request;
 }

@@ -15,6 +15,7 @@ import { panelMetadataFreshnessMs } from '@/constants/adminPanel';
 
 type SecondarySection = 'plans' | 'notifications' | 'reps' | 'sources' | 'subAdmins';
 type Section = 'stats' | 'devices' | 'watchingNow' | SecondarySection;
+const coreSections: SecondarySection[] = ['plans', 'reps', 'sources'];
 interface PanelData {
   stats: AdminStats | null; devices: Device[]; plans: Plan[]; notifications: Notification[];
   reps: Representative[]; sources: Source[]; subAdmins: SubAdmin[]; watchingNow: WatchingDevice[];
@@ -56,13 +57,13 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
   const clientQueue = useRef<PanelSyncQueue | null>(null);
   const metadataQueues = useRef<Partial<Record<SecondarySection, PanelSyncQueue>>>({});
   const metadataUpdatedAt = useRef<Partial<Record<SecondarySection, number>>>({});
-  const requestedSections = useRef<Set<SecondarySection>>(new Set());
+  const requestedSections = useRef<Set<SecondarySection>>(new Set(coreSections));
 
   const reset = useCallback(() => {
     generation.current += 1;
     clientQueue.current?.dispose(); clientQueue.current = null;
     for (const queue of Object.values(metadataQueues.current)) queue?.dispose();
-    metadataQueues.current = {}; metadataUpdatedAt.current = {}; requestedSections.current = new Set();
+    metadataQueues.current = {}; metadataUpdatedAt.current = {}; requestedSections.current = new Set(coreSections);
     identityRef.current = null; clientsLoadedRef.current = false;
     clearAdminSession(); setIdentity(null); setData(emptyData());
     setLoaded({}); setLoadingSections({}); setErrors({}); setAccessError('');
@@ -81,21 +82,39 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
 
   const syncClients: AdminPanelContextType['syncClients'] = useCallback((silent = false, force = false) => {
     if (!identityRef.current) return Promise.resolve();
-    if (!silent) setLoading(true);
+    if (!silent || !clientsLoadedRef.current) setLoading(true);
     if (!clientQueue.current) {
       const epoch = generation.current;
       clientQueue.current = createPanelSyncQueue({
-        read: getPanelSnapshot,
+        read: fresh => {
+          const includeMetadata = coreSections.some(section => !metadataUpdatedAt.current[section] ||
+            Date.now() - metadataUpdatedAt.current[section]! >= panelMetadataFreshnessMs);
+          if (includeMetadata) setLoadingSections(previous => ({ ...previous, plans: true, reps: true, sources: true }));
+          return getPanelSnapshot(fresh, includeMetadata);
+        },
         apply: snapshot => {
           if (generation.current !== epoch) return;
           clientsLoadedRef.current = true;
-          setData(previous => ({ ...previous, devices: snapshot.devices, stats: snapshot.stats, watchingNow: snapshot.watchingNow }));
-          setLoaded(previous => ({ ...previous, devices: true, stats: true, watchingNow: true }));
+          const received: Partial<Pick<PanelData, 'plans' | 'reps' | 'sources'>> = {};
+          const receivedFlags: Partial<Record<Section, boolean>> = {};
+          if (snapshot.plans) { received.plans = snapshot.plans; receivedFlags.plans = true; metadataUpdatedAt.current.plans = Date.now(); }
+          if (snapshot.reps) { received.reps = snapshot.reps; receivedFlags.reps = true; metadataUpdatedAt.current.reps = Date.now(); }
+          if (snapshot.sources) { received.sources = snapshot.sources; receivedFlags.sources = true; metadataUpdatedAt.current.sources = Date.now(); }
+          setData(previous => ({ ...previous, ...received, devices: snapshot.devices, stats: snapshot.stats, watchingNow: snapshot.watchingNow }));
+          setLoaded(previous => ({ ...previous, ...receivedFlags, devices: true, stats: true, watchingNow: true }));
           setLastSyncedAt(snapshot.syncedAt);
-          setErrors(previous => { const next = { ...previous }; delete next.devices; delete next.stats; delete next.watchingNow; return next; });
+          setErrors(previous => {
+            const next = { ...previous }; delete next.devices; delete next.stats; delete next.watchingNow;
+            for (const section of coreSections) if (receivedFlags[section]) delete next[section];
+            return { ...next, ...snapshot.metadataErrors };
+          });
         },
         onError: error => reportError(error, epoch, 'devices'),
-        onIdle: () => { if (generation.current === epoch) setLoading(false); },
+        onIdle: () => {
+          if (generation.current !== epoch) return;
+          setLoading(false);
+          setLoadingSections(previous => ({ ...previous, plans: false, reps: false, sources: false }));
+        },
       });
     }
     return clientQueue.current.request(force);
@@ -124,6 +143,11 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
     requestedSections.current.add(section);
     const updatedAt = metadataUpdatedAt.current[section];
     if (!force && updatedAt && Date.now() - updatedAt < panelMetadataFreshnessMs) return Promise.resolve();
+    if (coreSections.includes(section)) {
+      metadataUpdatedAt.current[section] = 0;
+      // Plans, representatives and sources share the client read, including the first opening.
+      return syncClients(true, force);
+    }
     setLoadingSections(previous => ({ ...previous, [section]: true }));
     let queue = metadataQueues.current[section];
     if (!queue) {
@@ -144,26 +168,29 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
     }
     if (force) metadataUpdatedAt.current[section] = 0;
     return queue.request(force);
-  }, [reportError]);
+  }, [reportError, syncClients]);
 
   const syncPanel = useCallback(async (silent = true, force = false): Promise<void> => {
     if (!identityRef.current) return;
-    // Secondary tabs are refreshed automatically, but never hold the MAC polling cycle.
-    for (const section of requestedSections.current) void loadSection(section, force);
+    if (force) for (const section of coreSections) metadataUpdatedAt.current[section] = 0;
+    // Only ancillary screens use separate reads; core data is prefetched in one request.
+    for (const section of requestedSections.current) if (!coreSections.includes(section)) void loadSection(section, force);
     await syncClients(silent, force);
   }, [syncClients, loadSection]);
   useEffect(() => subscribePanelChanges(change => {
     if (!identityRef.current || change.scopeKey !== getPanelScopeKey(getAdminAuthPayload())) return;
-    if (change.sections.includes('devices')) {
-      clientQueue.current?.invalidate();
-      void syncClients(true, true);
-    }
     for (const section of change.sections) {
       if (section !== 'devices' && requestedSections.current.has(section)) {
         metadataUpdatedAt.current[section] = 0;
-        metadataQueues.current[section]?.invalidate();
-        void loadSection(section, true);
+        if (!coreSections.includes(section)) {
+          metadataQueues.current[section]?.invalidate();
+          void loadSection(section, true);
+        }
       }
+    }
+    if (change.sections.includes('devices') || change.sections.some(section => coreSections.includes(section as SecondarySection))) {
+      clientQueue.current?.invalidate();
+      void syncClients(true, true);
     }
   }), [syncClients, loadSection]);
   const loadAll = useCallback((silent = false) => syncPanel(silent, true), [syncPanel]);
