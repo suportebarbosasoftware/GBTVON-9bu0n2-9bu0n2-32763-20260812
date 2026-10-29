@@ -5,7 +5,7 @@ import { getPanelSnapshot, getPlans, getNotifications, getSubAdmins, rootAdminLo
 import type { Device, Plan, AdminStats, Notification, WatchingDevice, SubAdmin } from '@/services/adminApiService';
 import { getRepresentatives, getSources } from '@/services/repApiService';
 import type { Representative, Source } from '@/services/repApiService';
-import { clearAdminSession, getAdminAuthPayload, setSubAdminCredentials } from '@/services/adminSessionService';
+import { clearAdminSession, getAdminAuthPayload, setRootAdminSession, setSubAdminCredentials } from '@/services/adminSessionService';
 import { isAdminAuthError } from '@/services/adminTransportService';
 import { applyConfirmedDeviceChange, buildConfirmedPanelOverview } from '@/services/panelStateService';
 import { createPanelSyncQueue } from '@/services/panelSyncQueue';
@@ -154,9 +154,16 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
   }, [syncClients, loadSection]);
   useEffect(() => subscribePanelChanges(change => {
     if (!identityRef.current || change.scopeKey !== getPanelScopeKey(getAdminAuthPayload())) return;
-    void syncClients(true, true);
+    if (change.sections.includes('devices')) {
+      clientQueue.current?.invalidate();
+      void syncClients(true, true);
+    }
     for (const section of change.sections) {
-      if (section !== 'devices' && requestedSections.current.has(section)) void loadSection(section, true);
+      if (section !== 'devices' && requestedSections.current.has(section)) {
+        metadataUpdatedAt.current[section] = 0;
+        metadataQueues.current[section]?.invalidate();
+        void loadSection(section, true);
+      }
     }
   }), [syncClients, loadSection]);
   const loadAll = useCallback((silent = false) => syncPanel(silent, true), [syncPanel]);
@@ -173,9 +180,9 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
         if (!result.ok || !result.admin || !result.sessionToken) throw new Error(result.error || 'Credenciais inválidas.');
         setSubAdminCredentials(result.admin.id, result.sessionToken); nextIdentity = { subAdmin: result.admin };
       } else {
-        await rootAdminLogin(password);
-        if (generation.current !== epoch) { clearAdminSession(); return null; }
-        nextIdentity = { subAdmin: null };
+        const result = await rootAdminLogin(password);
+        if (generation.current !== epoch) return null;
+        setRootAdminSession(result.token); nextIdentity = { subAdmin: null };
       }
       identityRef.current = nextIdentity; setIdentity(nextIdentity);
       void syncClients(false, true);

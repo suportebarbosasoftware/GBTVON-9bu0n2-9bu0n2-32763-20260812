@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 import { issueRootSession, verifyRootSession } from '../_shared/adminSession.ts';
 import { readPanelRows, buildPanelOverview, countPanelRelations } from '../_shared/adminPanelData.ts';
+import { createPanelDatabaseFetch } from '../_shared/panelDatabaseFetch.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 
@@ -41,23 +42,36 @@ Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   const startedAt = Date.now();
   let actionName = 'unknown';
+  let requestId = 'legacy';
   try {
     const body = await req.json();
     actionName = typeof body.action === 'string' ? body.action : 'unknown';
-    console.log('[panel-edge] start', actionName);
+    requestId = typeof body.requestId === 'string' && /^[a-z0-9-]{1,64}$/.test(body.requestId) ? body.requestId : 'legacy';
+    console.log('[panel-edge] start', actionName, requestId);
     // Await the complete dispatcher so rejected write confirmations always receive JSON + CORS.
     return await handleBody(body);
   } catch (error: any) {
-    console.error('[panel-edge] failed', actionName, error?.code ?? 'internal_error');
-    return json({ error: error?.message || 'Erro interno.' }, 500);
+    const timeout = /panel_database_timeout/i.test(String(error?.message ?? ''));
+    console.error('[panel-edge] failed', actionName, requestId, timeout ? 'database_timeout' : error?.code ?? 'internal_error');
+    if (timeout) return json({ error: ['rootAdminLogin', 'repLogin', 'subAdminLogin'].includes(actionName)
+      ? 'O banco não respondeu à autenticação a tempo. Isso não indica senha incorreta. Tente novamente.'
+      : 'O banco não respondeu à consulta a tempo. Os dados anteriores devem ser mantidos e a consulta pode ser repetida.', code: 'database_timeout' }, 503);
+    return json({ error: error?.message || 'Erro interno.', code: 'internal_error' }, 500);
   } finally {
-    console.log('[panel-edge] end', actionName, 'elapsed_ms', Date.now() - startedAt);
+    console.log('[panel-edge] end', actionName, requestId, 'elapsed_ms', Date.now() - startedAt);
   }
 });
 
 async function handleBody(body: any): Promise<Response> {
-  const supabase = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
   const { action, adminPassword } = body;
+  const boundedRead = typeof action === 'string' && (action.startsWith('get') ||
+    ['rootAdminLogin', 'repLogin', 'subAdminLogin', 'validateRepCode', 'lookupDeviceByMac'].includes(action));
+  // Login/reads return a diagnostic 503 before the app timeout rather than hanging indefinitely.
+  // Mutation timeouts and retry behavior remain unchanged; no automatic writes are repeated.
+  const supabase = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    ...(boundedRead ? { global: { fetch: createPanelDatabaseFetch(Date.now() + 14000) } } : {}),
+  });
 
   async function resolveRep(repId: string, password: string): Promise<any | null> {
     if (typeof repId !== 'string' || !repId || typeof password !== 'string' || !password) return null;
@@ -170,21 +184,30 @@ async function handleBody(body: any): Promise<Response> {
       return confirmedDevice(supabase.from('devices').update({ source_id: body.sourceId, plan_id: planId,
         updated_at: new Date().toISOString() }).eq('id', deviceId).eq('rep_id', repId), true);
     }
-    const rep = await resolveRep(repId, repPassword);
-    if (!rep) return authError();
-    if (action === 'getRepPanelSnapshot' || action === 'getRepDevices') {
-      const devices = await readPanelRows(() => supabase.from('devices').select('*, sources(name)').eq('rep_id', repId)
-        .order('created_at', { ascending: false }).order('id', { ascending: false }));
+    if (action === 'getRepPanelSnapshot' || action === 'getRepDevices' || action === 'getRepSources') {
+      if (typeof repId !== 'string' || !repId || typeof repPassword !== 'string' || !repPassword) return authError();
+      // All reads remain rep-scoped; no data is returned before the credentials are verified.
+      // Authentication and owned-data reads run together instead of chaining 2–3 network trips.
+      if (action === 'getRepSources') {
+        const [rep, sources, rows] = await Promise.all([
+          resolveRep(repId, repPassword),
+          readPanelRows(() => supabase.from('sources').select('*').eq('rep_id', repId).eq('active', true).order('id')),
+          readPanelRows(() => supabase.from('devices').select('id, source_id').eq('rep_id', repId).eq('activated', true).order('id')),
+        ]);
+        if (!rep) return authError();
+        const counts = countPanelRelations(rows, 'source_id');
+        return json({ sources: sources.map(source => ({ ...source, active_macs: counts.get(source.id) ?? 0 })) });
+      }
+      const [rep, devices] = await Promise.all([
+        resolveRep(repId, repPassword),
+        readPanelRows(() => supabase.from('devices').select('*, sources(name)').eq('rep_id', repId)
+          .order('created_at', { ascending: false }).order('id', { ascending: false })),
+      ]);
+      if (!rep) return authError();
       return json({ devices, rep, syncedAt: new Date().toISOString() });
     }
-    if (action === 'getRepSources') {
-      const sources = await readPanelRows(() => supabase.from('sources').select('*').eq('rep_id', repId).eq('active', true).order('id'));
-      if (!sources.length) return json({ sources: [] });
-      const rows = await readPanelRows(() => supabase.from('devices').select('id, source_id').eq('rep_id', repId)
-        .eq('activated', true).in('source_id', sources.map(source => source.id)).order('id'));
-      const counts = countPanelRelations(rows, 'source_id');
-      return json({ sources: sources.map(source => ({ ...source, active_macs: counts.get(source.id) ?? 0 })) });
-    }
+    const rep = await resolveRep(repId, repPassword);
+    if (!rep) return authError();
     if (action === 'lookupDeviceByMac') {
       if (!body.mac) return json({ found: false });
       const device = await dataOf(supabase.from('devices').select('client_name, email, mac_address')

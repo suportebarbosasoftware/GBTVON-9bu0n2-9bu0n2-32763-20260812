@@ -126,8 +126,14 @@ export function RepPanelProvider({ children }: { children: ReactNode }) {
   }, [syncClients, loadSources]);
   useEffect(() => subscribePanelChanges(change => {
     if (!repId.current || change.scopeKey !== getPanelScopeKey(getRepAuthPayload())) return;
-    void syncClients(true, true);
-    if (change.sections.includes('sources')) void loadSources(true);
+    if (change.sections.includes('devices')) {
+      clientQueue.current?.invalidate();
+      void syncClients(true, true);
+    }
+    if (change.sections.includes('sources')) {
+      sourcesUpdatedAt.current = 0; sourceQueue.current?.invalidate();
+      void loadSources(true);
+    }
   }), [syncClients, loadSources]);
   const login = useCallback(async (repNumber: string, password: string): Promise<string | null> => {
     if (loginPending.current) return 'Aguarde o login em andamento.';

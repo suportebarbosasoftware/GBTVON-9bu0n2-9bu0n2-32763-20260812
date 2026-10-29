@@ -16,17 +16,22 @@ export function createPanelSyncQueue<T>(options: {
   let followUp = false;
   let urgent = false;
   let disposed = false;
+  let readFinished = false;
 
   function request(fresh = false): Promise<void> {
     if (disposed) return Promise.resolve();
     if (pending) {
-      if (fresh) { revision += 1; followUp = true; urgent = true; }
+      // Entry, focus and a repeated refresh share an unpublished read. Only a confirmed
+      // mutation invalidates it; otherwise the first usable snapshot was being discarded.
+      if (fresh) { urgent = true; if (readFinished) followUp = true; }
       return pending;
     }
     urgent = fresh;
+    readFinished = false;
     pending = Promise.resolve().then(async () => {
       do {
         followUp = false;
+        readFinished = false;
         if (disposed) break;
         const expectedRevision = revision;
         const bypassBackoff = urgent;
@@ -37,6 +42,7 @@ export function createPanelSyncQueue<T>(options: {
         } catch (error) {
           if (!disposed && revision === expectedRevision) options.onError(error);
         }
+        readFinished = true;
       } while (!disposed && followUp);
     }).finally(() => {
       pending = null;

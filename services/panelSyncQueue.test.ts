@@ -24,6 +24,18 @@ Deno.test('polling during an existing read shares a single request', async () =>
   assert(applied.join(',') === '1', 'A confirmed read was not published.');
 });
 
+Deno.test('login, focus and entry refreshes publish the first snapshot without querying it twice', async () => {
+  const result = deferred<number>();
+  let reads = 0;
+  const applied: number[] = [];
+  const queue = createPanelSyncQueue({ read: () => { reads += 1; return result.promise; }, apply: value => applied.push(value), onError: () => {} });
+  const login = queue.request(true); await Promise.resolve();
+  const focus = queue.request(true); const entry = queue.request(true);
+  assert(login === focus && focus === entry, 'Entry refreshes did not share the pending read.');
+  result.resolve(1); await login;
+  assert(reads === 1 && applied.join(',') === '1', 'The first valid snapshot was discarded or queried twice.');
+});
+
 Deno.test('many changes during a read produce one fresh follow-up, never stale state', async () => {
   const old = deferred<number>();
   const fresh = deferred<number>();

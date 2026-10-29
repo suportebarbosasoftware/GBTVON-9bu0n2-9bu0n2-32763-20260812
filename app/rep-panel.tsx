@@ -189,7 +189,7 @@ export default function RepPanelScreen() {
       return;
     }
     setLoginError('');
-    const error = await login(repNumber.trim(), password.trim());
+    const error = await login(repNumber.trim(), password);
     if (error) setLoginError(error);
     else setPassword('');
   }
@@ -544,13 +544,14 @@ export default function RepPanelScreen() {
             ) : null}
 
             <Pressable
-              style={[styles.loginBtn, loginLoading && { opacity: 0.6 }]}
+              style={({ pressed }) => [styles.loginBtn, (loginLoading || pressed) ? { opacity: 0.6 } : null]}
               onPress={handleLogin}
               disabled={loginLoading}
+              accessibilityRole="button" accessibilityLabel={loginLoading ? 'Aguardando autenticação do servidor' : 'Entrar no painel do representante'}
             >
               {loginLoading
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <><Ionicons name="enter-outline" size={20} color="#fff" /><Text style={styles.loginBtnText}>  Entrar</Text></>
+                ? <><ActivityIndicator color={Colors.textPrimary} size="small" /><Text style={styles.loginBtnText}>  Autenticando...</Text></>
+                : <><Ionicons name="enter-outline" size={20} color={Colors.textPrimary} /><Text style={styles.loginBtnText}>  Entrar</Text></>
               }
             </Pressable>
           </View>

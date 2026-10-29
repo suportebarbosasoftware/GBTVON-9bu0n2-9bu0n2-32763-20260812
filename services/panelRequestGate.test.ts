@@ -39,6 +39,19 @@ Deno.test('new reads wait for all current writes and are then released', async (
   assert(Number(reads) === 1, 'The read did not execute exactly once.');
 });
 
+Deno.test('a previous representative action never blocks reads for a different panel identity', async () => {
+  const gate = createPanelRequestGate();
+  const slow = deferred();
+  const write = gate.runWrite(() => slow.promise, 'rep-a');
+  let ownRead = false;
+  const waitingRead = gate.runRead(async () => { ownRead = true; }, 'rep-a');
+  let otherRead = false;
+  await gate.runRead(async () => { otherRead = true; }, 'root');
+  assert(otherRead && !ownRead, 'An unrelated panel waited behind the slow representative action.');
+  slow.release(); await Promise.all([write, waitingRead]);
+  assert(ownRead, 'The matching session did not recover after confirmation.');
+});
+
 Deno.test('a failed write releases waiting reads without retrying the write', async () => {
   const gate = createPanelRequestGate();
   const waiting = deferred();

@@ -4,7 +4,7 @@
  */
 import { getSupabaseClient } from '@/template';
 import { invokeAdminApi } from '@/services/adminTransportService';
-import { getAdminAuthPayload, setRootAdminSession } from '@/services/adminSessionService';
+import { getAdminAuthPayload } from '@/services/adminSessionService';
 export { setAdminPassword, setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession } from '@/services/adminSessionService';
 
 export interface SubAdmin {
@@ -107,10 +107,11 @@ async function callFlat(action: string, payload: Record<string, unknown> = {}, r
   return invokeAdminApi({ ...payload, action, ...getAdminAuthPayload() }, { refresh });
 }
 
-export async function rootAdminLogin(password: string): Promise<void> {
+export async function rootAdminLogin(password: string): Promise<{ token: string }> {
   const result = await invokeAdminApi({ action: 'rootAdminLogin', password });
-  if (!result.ok || !result.rootSessionToken) throw new Error(result.error || 'Não foi possível iniciar a sessão administrativa.');
-  setRootAdminSession(result.rootSessionToken);
+  if (!result.ok || typeof result.rootSessionToken !== 'string' || !result.rootSessionToken) throw new Error(result.error || 'Não foi possível iniciar a sessão administrativa.');
+  // The provider publishes only after checking the login generation, never from a stale response.
+  return { token: result.rootSessionToken };
 }
 
 export interface AdminPanelSnapshot {
