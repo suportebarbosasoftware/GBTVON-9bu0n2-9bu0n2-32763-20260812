@@ -4,6 +4,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 import { issueRootSession, verifyRootSession } from '../_shared/adminSession.ts';
 import { readPanelRows, readPanelMetadata, buildPanelOverview, countPanelRelations } from '../_shared/adminPanelData.ts';
 import { createPanelDatabaseFetch } from '../_shared/panelDatabaseFetch.ts';
+import { blockScopedDevices } from '../_shared/bulkDeviceBlock.ts';
 
 const ADMIN_PASSWORD = Deno.env.get('ADMIN_PASSWORD') ?? '';
 
@@ -485,6 +486,15 @@ async function handleBody(body: any): Promise<Response> {
   }
 
   const raw = body.data || {};
+  if (action === 'block_all_devices') {
+    // This action is available only after administrative authentication above.
+    // Never use IDs or a scope supplied by the request to widen the network.
+    if (raw.confirmAll !== true) return json({ error: 'Confirme o bloqueio de todas as MACs desta rede.', code: 'confirmation_required' }, 400);
+    const reasonDetail = typeof raw.reasonDetail === 'string' && raw.reasonDetail.trim()
+      ? raw.reasonDetail.trim().slice(0, 400)
+      : 'Esta versão do aplicativo foi desativada. Atualize para a nova versão.';
+    return json(await blockScopedDevices(supabase, resolvedAdminId, reasonDetail));
+  }
   if (action === 'delete_device') return confirmedDeletion(scopeDevices(supabase.from('devices').delete().eq('id', raw.deviceId)), true);
   if (action === 'delete_devices_bulk') {
     if (!Array.isArray(raw.deviceIds) || !raw.deviceIds.length) throw new Error('Nenhum dispositivo selecionado');

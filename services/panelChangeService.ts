@@ -8,6 +8,7 @@ const scheduled = new Map<string, { sections: Set<PanelChangeSection>; timer: Re
 const affected: Record<string, PanelChangeSection[]> = {
   save_device: ['devices', 'plans', 'sources', 'reps'], activate_device: ['devices', 'plans', 'sources', 'reps'],
   deactivate_device: ['devices', 'plans', 'sources', 'reps'], block_device: ['devices', 'plans', 'sources', 'reps'],
+  block_all_devices: ['devices', 'plans', 'sources', 'reps'],
   delete_device: ['devices', 'plans', 'sources', 'reps'], delete_devices_bulk: ['devices', 'plans', 'sources', 'reps'],
   delete_inactive_devices: ['devices', 'plans', 'sources', 'reps'], grant_grace_period: ['devices', 'plans', 'sources', 'reps'],
   update_device_notes: ['devices'], set_device_expiry: ['devices'], set_device_price: ['devices'],

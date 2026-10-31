@@ -21,6 +21,24 @@ export function applyConfirmedDeviceChange<T extends PanelDeviceState>(
   return next;
 }
 
+export interface BulkDeviceBlockResult {
+  blockedIds: string[];
+  blockedCount: number;
+  blockedAt: string;
+  reasonDetail: string;
+  adminId: string | null;
+}
+
+/** Patch only IDs the server acknowledged, never an unconfirmed whole snapshot. */
+export function applyConfirmedDeviceBlocks<T extends PanelDeviceState>(devices: T[], result: BulkDeviceBlockResult): T[] {
+  const blocked = new Set(result.blockedIds);
+  return devices.map(device => blocked.has(device.id) ? {
+    ...device, activated: false, blocked_reason: 'manual', block_reason_detail: result.reasonDetail,
+    blocked_at: result.blockedAt, updated_at: result.blockedAt,
+    current_content: null, current_content_type: null, current_content_at: null,
+  } : device);
+}
+
 export function buildConfirmedPanelOverview<T extends PanelDeviceState>(devices: T[], plans = 0, now = Date.now()) {
   const today = new Date(now); today.setHours(0, 0, 0, 0);
   const watchingNow = devices.filter(device => Boolean(device.current_content) && Boolean(device.current_content_at) &&

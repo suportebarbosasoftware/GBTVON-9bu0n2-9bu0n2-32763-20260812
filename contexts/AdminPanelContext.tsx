@@ -7,7 +7,8 @@ import { getRepresentatives, getSources } from '@/services/repApiService';
 import type { Representative, Source } from '@/services/repApiService';
 import { clearAdminSession, getAdminAuthPayload, setRootAdminSession, setSubAdminCredentials } from '@/services/adminSessionService';
 import { isAdminAuthError } from '@/services/adminTransportService';
-import { applyConfirmedDeviceChange, buildConfirmedPanelOverview } from '@/services/panelStateService';
+import { applyConfirmedDeviceChange, applyConfirmedDeviceBlocks, buildConfirmedPanelOverview } from '@/services/panelStateService';
+import type { BulkDeviceBlockResult } from '@/services/panelStateService';
 import { createPanelSyncQueue } from '@/services/panelSyncQueue';
 import type { PanelSyncQueue } from '@/services/panelSyncQueue';
 import { getPanelScopeKey, subscribePanelChanges } from '@/services/panelChangeService';
@@ -31,6 +32,7 @@ export interface AdminPanelContextType extends PanelData {
   syncClients: (silent?: boolean, force?: boolean) => Promise<void>;
   syncPanel: (silent?: boolean, force?: boolean) => Promise<void>;
   commitDeviceChange: (device: Device | null, removedIds?: string[]) => void;
+  commitDeviceBlocks: (result: BulkDeviceBlockResult) => void;
   loadSection: (section: SecondarySection, force?: boolean) => Promise<void>;
   loadAll: (silent?: boolean) => Promise<void>;
   loadWatching: () => Promise<void>; refresh: () => Promise<void>; reset: () => void;
@@ -135,6 +137,21 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
     });
     for (const section of ['plans', 'sources', 'reps'] as SecondarySection[]) {
       metadataUpdatedAt.current[section] = 0; metadataQueues.current[section]?.invalidate();
+    }
+  }, []);
+
+  const commitDeviceBlocks = useCallback((result: BulkDeviceBlockResult) => {
+    if (!identityRef.current || result.adminId !== (identityRef.current.subAdmin?.id ?? null)) return;
+    clientQueue.current?.invalidate();
+    setData(previous => {
+      const devices = applyConfirmedDeviceBlocks(previous.devices, result);
+      if (!clientsLoadedRef.current) return { ...previous, devices };
+      const overview = buildConfirmedPanelOverview(devices, previous.stats?.plans ?? 0);
+      return { ...previous, devices, stats: overview.stats, watchingNow: overview.watchingNow as WatchingDevice[] };
+    });
+    for (const section of coreSections) {
+      metadataUpdatedAt.current[section] = 0;
+      metadataQueues.current[section]?.invalidate();
     }
   }, []);
 
@@ -249,8 +266,8 @@ export function AdminPanelProvider({ children }: { children: ReactNode }) {
       reps: loaded.devices ? data.reps.map(rep => ({ ...rep, active_devices: repCounts.get(rep.id) ?? 0 })) : data.reps,
       authenticated: identity !== null, isSubAdmin: !!identity?.subAdmin, currentSubAdmin: identity?.subAdmin ?? null,
       loading, refreshing, loaded, loadingSections, lastSyncedAt, syncError, accessError,
-      login, syncClients, syncPanel, commitDeviceChange, loadSection, loadAll, loadWatching, refresh, reset };
+      login, syncClients, syncPanel, commitDeviceChange, commitDeviceBlocks, loadSection, loadAll, loadWatching, refresh, reset };
   }, [data, identity, loading, refreshing, loaded, loadingSections, lastSyncedAt, syncError, accessError,
-    login, syncClients, syncPanel, commitDeviceChange, loadSection, loadAll, loadWatching, refresh, reset]);
+    login, syncClients, syncPanel, commitDeviceChange, commitDeviceBlocks, loadSection, loadAll, loadWatching, refresh, reset]);
   return <AdminPanelContext.Provider value={value}>{children}</AdminPanelContext.Provider>;
 }

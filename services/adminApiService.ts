@@ -6,6 +6,7 @@ import { getSupabaseClient } from '@/template';
 import { invokeAdminApi } from '@/services/adminTransportService';
 import { getAdminAuthPayload } from '@/services/adminSessionService';
 import type { Representative, Source } from '@/services/repApiService';
+import type { BulkDeviceBlockResult } from '@/services/panelStateService';
 export { setAdminPassword, setSubAdminCredentials, clearSubAdminCredentials, isSubAdminSession } from '@/services/adminSessionService';
 
 export interface SubAdmin {
@@ -175,6 +176,22 @@ export async function deactivateDevice(deviceId: string): Promise<Device> {
 
 export async function blockDevice(deviceId: string, reasonDetail?: string): Promise<Device> {
   return confirmedDevice(await call('block_device', { deviceId, reasonDetail }), deviceId);
+}
+
+/** Blocks the authenticated network in one server write, not one request per MAC. */
+export async function blockAllDevices(): Promise<BulkDeviceBlockResult> {
+  const authPayload = getAdminAuthPayload();
+  const result = await invokeAdminApi({ action: 'block_all_devices', ...authPayload,
+    data: { confirmAll: true, reasonDetail: 'Esta versão do aplicativo foi desativada. Atualize para a nova versão.' } });
+  if (!result?.success || !Array.isArray(result.blockedIds) ||
+      result.blockedIds.some((id: unknown) => typeof id !== 'string' || !id) ||
+      new Set(result.blockedIds).size !== result.blockedIds.length ||
+      !Number.isInteger(result.blockedCount) || result.blockedCount < result.blockedIds.length ||
+      typeof result.blockedAt !== 'string' || !Number.isFinite(new Date(result.blockedAt).getTime()) ||
+      typeof result.reasonDetail !== 'string' || result.adminId !== (authPayload.adminId ?? null)) {
+    throw new Error('O servidor não confirmou o bloqueio de todas as MACs. Atualize o painel antes de repetir.');
+  }
+  return result;
 }
 
 export async function deleteDevice(deviceId: string): Promise<string[]> {

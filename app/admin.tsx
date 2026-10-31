@@ -25,6 +25,7 @@ import { useAdminPanelActions } from '@/hooks/useAdminPanelActions';
 import { useAlert } from '@/template';
 import { useAdminPanelPolling } from '@/hooks/useAdminPanelPolling';
 import { AdminSyncStatus } from '@/components/ui/AdminSyncStatus';
+import { BulkMacBlockControl } from '@/components/feature/BulkMacBlockControl';
 
 const { width } = Dimensions.get('window');
 
@@ -558,6 +559,7 @@ export default function AdminScreen() {
 
           return (
             <View style={styles.section}>
+              <BulkMacBlockControl isSubAdmin={isSubAdmin} />
               {/* ── REP SELECTOR — shown when no rep is drilled into ── */}
               {devicesRepFilter === null && !devicesSearch.trim() ? (
                 <>
